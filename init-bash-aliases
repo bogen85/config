@@ -1,0 +1,37 @@
+# CudaText: lexer_file="Bash script"; tab_size=2; tab_spaces=yes;
+
+function __new_bash_aliases__ () {
+  local tmp=~/.tmp/
+  mkdir -pv $tmp
+  local pid=$$
+  local out=$tmp/$pid.__aliases__.out
+
+  function rm_aliases_out () {
+    rm -f $out.*
+  }
+
+  function aliases () {
+    [ "$1" == "1" ] && rm_aliases_out
+    alias | sort -u 2>/dev/null > $out.$1
+  }
+
+  function diff_aliases () {
+    diff -wub $out.$1 $out.$2 2>/dev/null \
+      |grep '^[+-]alias ' \
+      |sed -e 's/^[+]alias /+/' -e 's/^[-]alias /-/'
+  }
+
+  rm_aliases_out
+  aliases 1
+
+  source ~/.bash_aliases
+
+  aliases 2
+  diff_aliases 1 2
+  rm_aliases_out
+  unset -f aliases
+  unset -f diff_aliases
+  unset -f rm_aliases_out
+}
+[ -f ~/.bash_aliases ] && __new_bash_aliases__
+unset -f __new_bash_aliases__

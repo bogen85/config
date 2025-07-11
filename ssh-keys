@@ -1,0 +1,25 @@
+# CudaText: lexer_file="Bash script"; tab_size=2; tab_spaces=Yes;
+# vim: set expandtab tabstop=2 shiftwidth=2 filetype=sh :
+
+function __load_keys0 () {
+  eval $(keychain -q --eval $(cd ~/.ssh; grep -F -l "BEGIN OPENSSH PRIVATE KEY" *))
+}
+
+function __load_keys () {
+  [ -z "$PS1" ] && return
+  [ -f /.ocienv ] && return
+
+  if __load_keys0; then
+    :
+  else
+    eval $(
+      cd ~/.ssh
+      ssh-add $(cd ~/.ssh; grep -F -l "BEGIN OPENSSH PRIVATE KEY" *)
+    )
+    __load_keys0
+  fi
+  # ssh-add -l
+}
+
+
+__load_keys
