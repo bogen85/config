@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# CudaText: lexer_file="Bash script"; tab_size=2; tab_spaces=Yes;
+
+exec ~/bin/run ~/bin/cudatext $@
+#exec setsid 1> /dev/null 2> /dev/null ~/bin/cudatext $@ &

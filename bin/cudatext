@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# CudaText: lexer_file="Bash script"; tab_size=2; tab_spaces=Yes;
+
+export QT_QPA_PLATFORMTHEME=qt5ct
+# export QT_QPA_PLATFORMTHEME=qt6ct
+
+#cudatext=cudatext-linux-qt5-amd64-1.217.7.0
+#cudatext=cudatext-linux-qt5-amd64-1.218.0.2
+cudatext=cudatext-linux-qt5-amd64-1.220.0.4
+#cudatext=/usr/bin/cudatext
+#exec $cudatext $@
+
+#exec /opt/cudatext/$cudatext/cudatext $@
+exec /usr/bin/cudatext $@

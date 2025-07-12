@@ -1,0 +1,4 @@
+#!/bin/sh
+# vim: set expandtab tabstop=2 shiftwidth=2:
+
+exec setsid 1> /dev/null 2> /dev/null $@ &
