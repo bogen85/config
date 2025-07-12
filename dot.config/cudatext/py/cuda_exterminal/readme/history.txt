@@ -1,0 +1,70 @@
+2024.05.24
++ add: command "CD to current file's directory" (by @arakel2)
++ add: option in plugins.ini "ctrl_c", set to '1' to enable Ctrl+C hotkey in terminal (by @arakel2)
++ add: option in plugins.ini "ctrl_x"
++ add: option in plugins.ini "ctrl_v"
+- fix: keys Home/End on Windows (by @arakel2)
+
+2024.02.12
+- fix: disabled some memo props and tweaked caret view
+
+2023.04.17
++ add: shift+Tab, ctrl+Left and ctrl+Right support
+
+2023.03.23
++ add: jump to [exterminal] section of plugins.ini file when opening config (thanks Alexey T.)
+- fix: cursor keys were not working (ESC-OA ansi codes) (thanks d0vgan)
+- fix: constant 5% CPU usage under Windows (thanks d0vgan)
+
+2022.10.30
+- fix: "clear" command did not clear all lines (thanks eltonfabricio10)
+- fix: terminal shows 'margin' line like main editor (thanks Alexey T.)
+
+2022.09.25
++ add: font size is now the same as in Console/Output (thanks eltonfabricio10)
+
+2022.09.19
++ add: added new option `themed` (use theme colors) (thanks eltonfabricio10)
+- fix: disabled showing of unprinted chars (thanks eltonfabricio10)
+
+2022.07.11
+- fix: terminal lose focus under some circumstances.
+
+2022.07.10
++ add: added new option show_caption (thanks Alexey T.)
++ add: added URL markers
+- fix: #30 - Leak of sidebar pop up menus (thanks Alexey T.)
+- fix: crash on link opening on Windows
+
+2022.07.09
++ add: added context menu to bottom panel icons (thanks Alexey T. for new API)
+
+2022.07.08
+- fix: #28 - exception when colors=0 (thanks Alexey T.)
++ add: terminal header
++ add: using new API call: MARKERS_SET_DUPS=0, disallow marker duplications. (thanks Alexey T.)
+
+2022.07.07
++ add: using new API call: MARKERS_ADD_MANY (thanks Alexey T.)
++ add: command "Run selection from editor"
++ add: command "Run current file"
++ add: command "Toggle focus terminal/editor"
+- fix: bugs of commands above
+  (thanks Miroslav Matas and Alexey T.)
+
+2022.07.06
+- fix: terminal limit variable was comparing to wrong value
++ add: empty gutter (thanks Alexey T.)
+
+2022.07.05
++ made shell string configurable (thanks Alexey T.)
+
+2022.07.05
++ added some new features (commands like New Terminal, Close all terminals),
+  fixed some bugs,
+  added readme.txt / history.txt files.
+  (thanks Alexey T.)
+- removed floating mode
+
+2022.07.05
+initial version

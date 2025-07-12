@@ -1,0 +1,21 @@
+[ref]
+0=Assembly
+
+[comments]
+str1={
+str2=}
+styles_cmt=Comment
+styles_str=String
+
+[map]
+Symbol=Symbol
+Number=Number
+String=String
+Comment=Comment
+Id=Id
+Id keyword=IdKeyword
+Id std=Id2
+Preproc=Comment2
+Func modifier=Id3
+Symbol bad=SymbolBad
+Asm BG=SectionBG1

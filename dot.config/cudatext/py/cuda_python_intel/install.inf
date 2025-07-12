@@ -1,0 +1,53 @@
+[info]
+title=Python IntelliSense
+desc=Supports intelligence commands for Python: 1) auto-completion (Ctrl+Space), 2) goto-definition (item in context menu), 3) show function call-tip (Ctrl+Shift+Space), 4) show function doc-string, 5) show usages of name. Based on Jedi library.
+type=cudatext-plugin
+subdir=cuda_python_intel
+homepage=https://github.com/CudaText-addons/cuda_python_intel
+api=1.0.292
+
+[item1]
+section=events
+events=on_complete,on_goto_def,on_func_hint,on_open~,on_tab_change~
+lexers=Python
+
+[item10]
+section=commands
+caption=Python IntelliSense\Show doc-string
+method=show_docstring
+
+[item11]
+section=commands
+caption=Python IntelliSense\Show usages
+method=show_usages
+
+[item12]
+section=commands
+caption=Python IntelliSense\Refactoring - Rename
+method=refactoring_rename
+
+[item13]
+section=commands
+caption=Python IntelliSense\Refactoring - Inline
+method=refactoring_inline
+
+[item14]
+section=commands
+caption=Python IntelliSense\Refactoring - Extract variable
+method=refactoring_extract_variable
+
+[item15]
+section=commands
+caption=Python IntelliSense\Refactoring - Extract function
+method=refactoring_extract_function
+
+[item20]
+section=commands
+caption=Python IntelliSense\Select Python interpreter...
+method=select_py_interpreter
+
+[item30]
+section=commands
+caption=Python IntelliSense\Config
+method=config
+menu=o

@@ -1,0 +1,12 @@
+{
+  "lexers": {
+    "C++": "cpp",
+    "C": "c"
+  },
+  "cmd_unix": [
+      "clangd-17",
+  ],
+  "cmd_windows": [
+      "clangd",
+  ],
+}

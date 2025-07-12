@@ -1,0 +1,78 @@
+2024.07.29
++ add: for fuzzy search, show fuzzy matches at the end of list (by @iconv)
+
+2024.07.24
+- fix: option "min_len" was ignored, regression
+
+2024.07.10
++ add: improved speed on big files, e.g. on 90K-lines test file time is changed from 6 sec to 2 sec
+* change: removed options "no_comments" / "no_strings" (impossible to implement if we search for words by Python regex)
+
+2024.05.08
++ add: option "fuzzy_search" (default: on)
+- fix: options "case_sens" / "case_split" / "underscore_split" were not used for words from document
+
+2024.05.02
+* change: changed default of "no_strings" option to "0" (mainly for Markdown)
+
+2023.07.05
++ add: option "show_acp_first"
+
+2023.04.28
++ add: optimization for big files
+
+2023.04.20
++ add: public API get_completions()
+
+2023.04.05
++ add: for option "what_editors" values 1 and 2, show completion listbox with filenames (code by @ildarkhasanshin and Alexey T.)
++ add: for word with dollar "$aaa", suggest also words beginning with "aaa" (by @ildarkhasanshin)
++ add: command "Config" puts caret on plugin's section
+
+2022.12.09
+- fix: plugin cannot suggest words for $<caret> in PHP
+
+2022.09.20
+* change: .acp files are now must be in UTF-8
+
+2021.08.06
++ add: can specify 'lexers=*'' to enable work in all lexers (from @xbarbie)
+
+2021.07.08
+- fix: minor fix to support Python 3.4 (thanks @de77)
+
+2021.02.24
++ add: options "case_split", "underscore_split" (boolean)
+
+2021.02.23
++ add: .acp autocomplete files support
+
+2021.02.22
+- fix: https://github.com/Alexey-T/CudaText/issues/3188 (thanks @tmsg-gh)
+
+2021.02.21
+- fix: fix from https://github.com/Alexey-T/CudaText/issues/3175
+
+2021.02.10
++ add: find also words with leading digits, eg '20min'
+
+2021.01.16
++ add: option "what_editors" to choose documents to read: current document, all opened documents, all opened documents with the same lexer
++ add: option "max_lines"
++ add: options "no_comments", "no_strings" (boolean)
++ add: speedup the word finding by using API EDACTION_FIND_ALL
+
+2019.11.17
++ add: plugin considers CudaText option "nonword_chars"
++ add: added config and menu item in "Options / Settings-plugins"
+
+2017.05.05
+- fix: not worked on words with "_"
+
+2017.03.15
++ add: lexer-list option is lower-case
++ add: lexer-list, added "ini files,properties"
++ add: skip word which is under caret (caret in middle or end)
+
+2016.01.02
+initial

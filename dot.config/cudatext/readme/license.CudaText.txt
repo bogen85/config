@@ -1,0 +1,5 @@
+CudaText project is freeware, open-source.
+It uses MPL 2.0 license.
+https://opensource.org/licenses/MPL-2.0
+
+Copyright (c) 2015-2023 Alexey Torgashin, UVviewsoft.com

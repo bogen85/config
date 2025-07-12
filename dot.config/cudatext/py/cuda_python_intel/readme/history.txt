@@ -1,0 +1,109 @@
+2024.03.22
+- avoid deprecated API
++ updated Jedi to 0.19.1
++ add jump to plugins.ini section in the command "Config"
+
+2023.08.31
++ updated Jedi to 0.19.0
+
+2022.05.27
++ add: i18n support from Markus
++ add: use case-sensitive list in auto-completion
++ updated Jedi to 0.18.1
+
+2021.01.08
++ updated Jedi to 0.18
+
+2020.09.13
+* changed location of config file, now it's settings/plugins.ini, section [python_intel]
++ add command "Options / Settings-plugins / Pyton Intellisense / Config"
++ add 2 options for size of "Usages" menu
+
+2020.08.24
++ show menu in command "Show usages" better: "filename:line:column (folder)"<break>"python_line"
+
+2020.05.14 (patches by @OlehL)
++ updated Jedi to 0.17
++ big rework of plugin
++ now Jedi uses environment from Project Manager plugin
++ command "Refactoring - Rename"
++ command "Refactoring - Inline"
++ command "Refactoring - Extract variable"
++ command "Refactoring - Extract function"
+
+2020.01.26
++ updated Jedi to 0.16.0
+- fix: "go to definition" did not scroll file to caret
+
+2019.12.20
++ updated Jedi, Parso
+
+2019.11.03
++ ignoring auto-completion in syntax comments/strings
++ on "go to definition", unfold target position
+
+2019.11.01
++ updated to Jedi 0.15.2, Parso 0.5.2
+
+2019.07.13
++ updated to Jedi 0.14.1
+
+2019.06.22
++ updated to Jedi 0.14, Parso 0.5
+
+2019.01.24
++ updated Parso lib
+
+2018.12.16
++ updated Jedi to 0.13.2
+
+2018.11.13
++ command "Select Python interpreter" shows fixed list on Linux/Mac
+
+2018.10.11
+* renamed plugin to "Python IntelliSense"
++ updated Jedi to 0.13.1
+
+2018.08.26
++ now you can select diferent Python interpeter (patch by @OlehL)
++ show 2 more commands in menu "Plugins - Python Intel"
+- fix: crash on Windows (@OlehL)
+- fix: avoid deprecated API
+
+2018.08.18
++ updated Jedi to 0.12.1
+
+2018.01.20
++ updated Jedi to 0.12.0
+
+2017.12.03
+- fix: fixed parso/utils.py, so Jedi don't crash (but some completion don't work)
+
+2017.11.25
+- fix: crash on some completions, on Win10
+
+2017.11.23
++ updated Jedi to 0.11.1
+
+2017.04.06
++ updated Jedi to 0.10.2
+
+2017.03.17
++ updated Jedi to 0.10; code adapted
+
+2017.02.14
+- fix: autocomplete didnt show after "ed."
+
+2016.09.23
++ improve "Show func hint"
++ refactor: jump to file
+
+2016.09.22
++ cmd "Show doc-string" (not in Plugins menu)
++ cmd "Show usages" (not in Plugins menu)
+
+2016.09.15
++ update Jedi to 0.10.0, with patch for missed pydoc_data module
+
+2016.01
+initial version

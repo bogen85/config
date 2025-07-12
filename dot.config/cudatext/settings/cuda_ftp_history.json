@@ -1,0 +1,9 @@
+{
+  "sftp://fbsdswdev00.office:22@dwight": [
+    {
+      "filename": "/home/development/build-capture/build-capture.go",
+      "datetime": "02.09.2024 02:50:29",
+      "pinned": false
+    }
+  ]
+}

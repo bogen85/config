@@ -1,0 +1,8 @@
+{
+  "cuda_exterminal,toggle_focus": {
+    "name": "plugin: ExTerminal: Toggle focus terminal/editor",
+    "s1": [
+      "Ctrl+T"
+    ]
+  }
+}

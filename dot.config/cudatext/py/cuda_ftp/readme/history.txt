@@ -1,0 +1,126 @@
+2024.04.18
++ add: Ctrl+Enter for pin/unpin of path in History-window
+
+2022.05.07
++ add: hotkey Ctrl+R for update in treeview
++ add: to history-file of new-file/dir
+
+2022.04.24
++ add: command "Rename" for file/dir (patch by @ildarkhasanshin)
+
+2022.04.21
++ add: command "Copy link" (patch by @ildarkhasanshin)
+
+2022.04.11
++ add: context menu has new item "Download file" (patch by @ildarkhasanshin)
+
+2022.04.04
++ add: F4 in file list opens the file in editor (patch by @ildarkhasanshin)
+
+2022.03.26
++ add: calculating size of history-window depending on screen-sizes (patch by @ildarkhasanshin)
+
+2022.03.23
++ add: context menu has new item "History" (patch by @ildarkhasanshin)
+
+2022.02.20
+- fix: error in pathlib.py when using on Python 3.10
+
+2022.02.01
+- fix: bugs because of "_" temp variables + "_" i18n function
+
+2022.01.18
++ add: items 'Go to dir' and 'Go to file' in the context menu of server (patches by @ildarkhasanshin)
++ add: i18n (patches from Markus)
+
+2022.01.15 (patches by @ildarkhasanshin)
++ add: pseudo-icons in the log for download, upload, remove
++ add: confirmation to remove file/dir
++ add: handle Del-key to remove file/dir
++ add: item 'Get properties' in the context menu of remote file
++ add: item 'Copy path' in the context menu of remote file
+
+2022.01.09
+- fix: command to activate FTP panel must force focusing the panel
+
+2021.06.17
+- fix: avoid deprecated API
+
+2021.03.09
++ add: 'rename' command for servers (work by @halfbrained)
+* migrated dialogs from legacy API
+
+2021.03.06
++ add: SFTP public key authentication support (work by @halfbrained)
+
+2019.11.27
+* changed folder name for cuda_ftp_libs to cuda_ftp_libs_py3x (x=5,6,7)
+
+2019.02.17
+- fix: UI error if "Username" contains an e-mail
+
+2019.02.03
++ add: Space press in treeview does the same as double click
+
+2019.01.30
++ add: new gray icons are used
+
+2018.04.21
++ add: event on_save now handled only if plugin is loaded (faster)
+
+2018.02.25
++ add: support CudaText new API: always show sidebar button
+
+2017.09.25
+- fix: avoid deleted APIs
+
+2017.09.09
++ added usage of SFTP libs on Windows, if additional plugin "SFTP support" is installed
+
+2017.09.01
+- fix: must scale dialog for high-dpi
+
+2017.08.08
++ option in server properties: "Use old LIST command"
+- avoid deprecated APIs
+
+2017.06.15
+- don't use deprecated APIs
+* moved icon files to sub-dir
+
+2017.05.05
+- fix: app blinks at left side on 1st saving of any file
+
+2017.03.28
++ don't use deprecated app_log() API, use proc_bottompanel_ API
+
+2017.02.03
++ new dialog for server-info
++ masked input for password
+
+2016.06.12
++ menuitem "Upload here" for dir/server
+
+2016.06.08
++ support for SFTP, Linux only
++ menu item in Plugins: Menu Connect
++ server prop: Timeout
++ passw can be "?" to ask each time
+
+2016.06.04
++ ftp server prop "Init dir"
+
+2016.06.02
++ statusbar progress on downld, Esc key
++ commd "Go to" for server
+
+2016.05.31
++ ftp errors will show in output-pane now
++ status msg on deleting big dirs, Esc key
+* changed fmt of opt-file
+
+2016.05.26
++ support for Win32 [Py3.3]
+
+2016.05.25
+init version

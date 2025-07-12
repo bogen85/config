@@ -1,0 +1,28 @@
+{
+  "dlg_preferences": {
+    "tree_w": 141,
+    "descr_memo_h": 169,
+    "filter_visible": true,
+    "sort_column": "Option",
+    "subsets": {
+      "df.": {
+        "filter_str": "@Lexers",
+        "filter_history": [
+          "@Keys",
+          "@Lexers"
+        ],
+        "selected_option": "dynamic_highlight"
+      }
+    },
+    "columns": [
+      [
+        "Option",
+        70
+      ],
+      [
+        "Value",
+        100
+      ]
+    ]
+  }
+}

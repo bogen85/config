@@ -1,0 +1,52 @@
+[info]
+title=ExTerminal
+desc=Mimics real interactive terminal behaviour. You can use console apps like nano/vim/etc. Resides in a bottom panel.
+type=cudatext-plugin
+subdir=cuda_exterminal
+homepage=https://github.com/veksha/cuda_exterminal
+
+[item0]
+section=events
+events=on_sidebar_popup,on_state~
+
+[item1]
+section=commands
+caption=ExTerminal\Config
+method=config
+menu=o
+
+
+[item2]
+section=commands
+caption=ExTerminal\New terminal
+method=new
+
+[item3]
+section=commands
+caption=ExTerminal\Close all terminals
+method=close_all
+
+[item4]
+section=commands
+caption=ExTerminal\Run selection from editor
+method=run_selection
+
+[item5]
+section=commands
+caption=ExTerminal\Run current file
+method=run_current_file
+
+[item6]
+section=commands
+caption=ExTerminal\Toggle focus terminal/editor
+method=toggle_focus
+
+[item7]
+section=commands
+caption=ExTerminal\CD to current file's directory
+method=cd_current_file_directory
+
+[bottombar1]
+hint=ExTerminal 1
+icon={dir}/icons8-console-30.png
+method=open

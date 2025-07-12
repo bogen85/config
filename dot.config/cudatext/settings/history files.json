@@ -1,0 +1,186 @@
+{
+  "bookmarks": {
+    "~|bin|dbroot": "16,1",
+    "|home|dev|devel|das-fpc-lib|units|dasutilstr.pas": "22,1"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|src|ssh-proxy|session|env.go": {
+    "lexer": "Go",
+    "enc": "UTF-8",
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "2,15,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|src|ssh-proxy|client|context.go": {
+    "lexer": "Go",
+    "enc": "UTF-8",
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "19,16,30,16,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|src|ssh-proxy|session|context.go": {
+    "lexer": "Go",
+    "enc": "UTF-8",
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "19,12,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|src|ssh-proxy|client|channel.go": {
+    "lexer": "Go",
+    "enc": "UTF-8",
+    "top": 6,
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "21,26,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|TODO.md": {
+    "lexer": "Markdown",
+    "enc": "UTF-8",
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "0,17,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|src|ssh-proxy|keys|keys.go": {
+    "lexer": "Go",
+    "enc": "UTF-8",
+    "top": 107,
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "1,17,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|src|ssh-proxy|config|ssh-proxy-config-common.go": {
+    "lexer": "Go",
+    "enc": "UTF-8",
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "2,96,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|ssh-proxy-config.go": {
+    "lexer": "Go",
+    "enc": "UTF-8",
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "0,10,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|make-md-b64-archive.sh": {
+    "lexer": "Bash script",
+    "enc": "UTF-8",
+    "top": 39,
+    "tab_size": 4,
+    "tab_spaces": true,
+    "crt": "27,72,-1,-1,"
+  },
+  "|home|dwight|.config|cudatext|settings|plugins.ini": {
+    "lexer": "Ini files ^",
+    "enc": "UTF-8",
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "88,7,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|src|ssh-proxy|server|server.go": {
+    "lexer": "Go",
+    "enc": "UTF-8",
+    "top": 16,
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "0,11,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|ssh-proxy-host-key-gen.go": {
+    "lexer": "Go",
+    "enc": "UTF-8",
+    "tab_size": 2,
+    "tab_spaces": false,
+    "crt": "33,30,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|ssh-proxy-server.go": {
+    "lexer": "Go",
+    "enc": "UTF-8",
+    "tab_size": 2,
+    "tab_spaces": false,
+    "crt": "0,0,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|README.md": {
+    "lexer": "Markdown",
+    "enc": "UTF-8",
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "24,31,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|Makefile": {
+    "lexer": "Makefile",
+    "enc": "UTF-8",
+    "top": 31,
+    "tab_size": 2,
+    "tab_spaces": false,
+    "crt": "31,62,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|Dockerfile": {
+    "lexer": "Dockerfile",
+    "enc": "UTF-8",
+    "tab_size": 2,
+    "tab_spaces": false,
+    "crt": "0,2,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|machinectl-wrapper|dev-user-machinectl-wrapper.go": {
+    "lexer": "Go",
+    "enc": "UTF-8",
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "4,273,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|ssh-proxy-config.json": {
+    "lexer": "JSON",
+    "enc": "UTF-8",
+    "tab_size": 2,
+    "tab_spaces": true,
+    "crt": "0,17,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|src|ssh-proxy|logging|logging.go": {
+    "lexer": "Go",
+    "enc": "UTF-8",
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "8,28,26,28,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|src|ssh-proxy|logging|resources.go": {
+    "lexer": "Go",
+    "enc": "UTF-8",
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "0,0,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|go-ssh-proxy|src|ssh-proxy|logging|traffic.go": {
+    "lexer": "Go",
+    "enc": "UTF-8",
+    "top": 6,
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "0,0,-1,-1,"
+  },
+  "|home|dwight|dev|OrbitalSystems-FES-WorkItems-Staging|workflows|min-unshare|min-unshare.go.txt": {
+    "enc": "UTF-8",
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "0,0,-1,-1,"
+  },
+  "|home|dwight|Downloads|amazon-shipment-tracking.eml": {
+    "enc": "UTF-8",
+    "top": 64,
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "52,77,-1,-1,"
+  },
+  "|home|dwight|Downloads|amazon-shipment-tracking.eml.txt": {
+    "enc": "UTF-8",
+    "top": 64,
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "52,77,-1,-1,"
+  },
+  "|home|dwight|golang-dev|bootstrap|bootstrap.sh": {
+    "lexer": "Bash script",
+    "enc": "UTF-8",
+    "tab_size": 4,
+    "tab_spaces": false,
+    "crt": "0,3,-1,-1,"
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "pos": {
+    "main_max": false,
+    "main": "121,124,2581,1826",
+    "bottom": "2098,817,1348,803",
+    "lexerprop": "0,0,956,883",
+    "lexerlib": "0,0,674,687",
+    "side": "574,844,792,647",
+    "main_mon": 0
+  },
+  "show_sidepanel": true,
+  "show_bottom": true,
+  "float_side": false,
+  "float_bottom": false,
+  "size_side": 509,
+  "size_bottom": 305,
+  "tab_left": "Project",
+  "tab_bottom": "Console",
+  "recent_files": [
+    "~/golang-dev/bootstrap/bootstrap.sh",
+    "~/Downloads/amazon-shipment-tracking.eml.txt",
+    "~/Downloads/amazon-shipment-tracking.eml",
+    "~/dev/OrbitalSystems-FES-WorkItems-Staging/workflows/machinectl-wrapper/dev-user-machinectl-wrapper.go",
+    "~/dev/OrbitalSystems-FES-WorkItems-Staging/workflows/go-ssh-proxy/Dockerfile",
+    "~/dev/OrbitalSystems-FES-WorkItems-Staging/workflows/go-ssh-proxy/README.md",
+    "~/dev/OrbitalSystems-FES-WorkItems-Staging/workflows/go-ssh-proxy/ssh-proxy-config.json",
+    "~/dev/OrbitalSystems-FES-WorkItems-Staging/workflows/go-ssh-proxy/ssh-proxy-server.go",
+    "~/dev/OrbitalSystems-FES-WorkItems-Staging/workflows/go-ssh-proxy/ssh-proxy-host-key-gen.go",
+    "~/dev/OrbitalSystems-FES-WorkItems-Staging/workflows/go-ssh-proxy/src/ssh-proxy/logging/logging.go"
+  ],
+  "list_console": [
+  ],
+  "finder": {
+    "regex": false,
+    "case": false,
+    "words": false,
+    "back": false,
+    "confirm": false,
+    "wrap": true,
+    "insel": false,
+    "tokens": 0,
+    "prescase": false,
+    "mline": false,
+    "hi": false,
+    "im": false,
+    "regex_subst": true
+  },
+  "lang": "",
+  "session": "history session.json",
+  "last_cmd": 2562,
+  "groups": 1,
+  "gr": {
+    "panel": "2,50",
+    "pages": "100,100,2,50,2,50,2,50,2,50,2,50,"
+  },
+  "list_find": [
+    "elevate",
+    "clean",
+    "willow",
+    "felons"
+  ],
+  "list_replace": [
+  ],
+  "sync_choose_themes": true,
+  "on_top": false
+}

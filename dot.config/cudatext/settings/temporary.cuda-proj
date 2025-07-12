@@ -1,0 +1,10 @@
+{
+  "nodes": [
+    "/home/dwight/golang-dev/bootstrap"
+  ],
+  "vars": [],
+  "mainfile": "",
+  "unfold": [
+    "/home/dwight/golang-dev/bootstrap"
+  ]
+}

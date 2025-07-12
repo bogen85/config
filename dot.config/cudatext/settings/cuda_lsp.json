@@ -1,0 +1,33 @@
+{
+  "root_dir_source": [
+    0
+  ],
+  "send_change_on_request": false,
+  "enable_mouse_hover": true,
+  "hover_dlg_max_lines": 10,
+  "hover_additional_commands": [
+    "Definition",
+    "References",
+    "Implementation",
+    "Declaration",
+    "Type definition"
+  ],
+  "hover_with_ctrl": true,
+  "cudatext_in_py_env": false,
+  "lint_type": "dc",
+  "lint_underline_style": 2,
+  "enable_code_tree": false,
+  "tree_types_show": "",
+  "auto_append_bracket": true,
+  "hard_filter": false,
+  "use_cache": true,
+  "servers_shutdown_max_time": 2,
+  "enable_semantic_tokens": false,
+  "semantic_max_lines": 10000,
+  "semantic_colors_light": "#BC7676,#15AD00,#BF00AF,#BF00AF,,,#FF2436,,#d79e3f,#00B3B7",
+  "semantic_colors_dark": "#E38F8F,#0f0,#EB67E0,#EB67E0,,,#FF2436,,#ffe226,#0ff",
+  "disabled_contexts": "cs",
+  "complete_from_text": false,
+  "use_markers": true,
+  "diagnostics_in_a_corner": false
+}

@@ -1,0 +1,14 @@
+{
+  "recent_projects": [
+    "{AppDir}/settings/temporary.cuda-proj"
+  ],
+  "no_files": "",
+  "no_dirs": ".git;.svn",
+  "no_hidden": true,
+  "toolbar": true,
+  "preview": true,
+  "d_click": false,
+  "goto_open": false,
+  "sort_order": "ext",
+  "on_start": true
+}

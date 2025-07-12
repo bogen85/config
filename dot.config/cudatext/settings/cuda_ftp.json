@@ -1,0 +1,18 @@
+{
+  "servers": [
+    {
+      "type": "sftp",
+      "address": "fbsdswdev00.office",
+      "port": "22",
+      "login": "dwight",
+      "password": "",
+      "init_dir": "",
+      "timeout": "30",
+      "label": "1",
+      "use_list": false,
+      "pkey_path": "/home/dwight/.ssh/id_rsa_home",
+      "remote_cert_fingerprint": "0E C9 E2 33 62 19 AB A4 C9 AD 03 53 23 C1 C3 36 C3 17 64 70",
+      "alias": "sftp://fbsdswdev00.office:22@dwight"
+    }
+  ]
+}

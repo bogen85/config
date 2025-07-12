@@ -1,0 +1,187 @@
+2024.09.21
+- fix: CudaText issue #5664
+
+2024.07.24 (by Alexey T.)
++ add: obey new app's option "autocomplete_replace_on_right":false
+
+2024.06.28 (by Alexey T.)
+* change: func-signature-tooltip is now themable (uses listbox colors)
+
+2024.06.07 (by Alexey T.)
++ add: option "hover_with_ctrl"
+- fix: plugin can bring app to foreground after switching to another app
+- fix: function-signature hint must have the same font-size as editor even if editor is zoomed in/out
+- fix: Qt5: first showing of function-signature hint has too small size
+
+2024.03.01 (by @DUOLabs333)
++ add: new config option to disable markers when adding snippets
+
+2024.02.27 (by @veksha)
++ add: support for initializationOptions
+
+2024.01.28 (by @veksha)
+- fix: force server shutdown if no response to shutdown request for 5 secs. (fix for nimlangserver)
+- fix: commented out block of code that can launch the same server again just after we triggered shutdown of it. happens on project switching.
++ add: clear all LSP bottom panel info before opening another project
+
+2024.01.27 (by @veksha)
++ add: do not hide the Hover window while the user is holding the mouse button and if the user releases the button, provide an opportunity for him to return the cursor to the window.
+
+2024.01.24 (by @veksha)
++ add: new option: diagnostics_in_a_corner - show diagnostics for current line in a corner of editor
+
+2024.01.23 (by @veksha)
+- fix: hover (hint) dialog height was calculated incorrectly for high DPI.
+
+2024.01.14 (by @veksha)
+- fix: some lsp servers can return None for certain values even when its against the LSP specs.
+
+2024.01.10 (by @veksha)
+- fix: changed lint_type default value to 'dc', because user may not want to use bookmarks for linting
+
+2024.01.08 (by @veksha)
++ add: enable tagSupport for publishDiagnostics (diagnostics will bring more hints)
+- fix: do not crash plugin on nimlangserver's bug related to WorkDoneProgress event
+
+2023.12.25 (by @veksha)
++ add: in Goto References dialog, preselect item which is equal to current line
+
+2023.11.04
+- fix: update typing_extensions.py from last version to fix work on Py 3.12 (thanks @KDBalashevich)
+
+2023.09.08 (by @veksha)
+- fix: support None-lexer for Vale server
+
+2023.07.27 (by @veksha)
+- fix: error when formatting code by LSP server
+
+2023.06.01 (by @veksha)
+- fix: AttributeError with "enable_code_tree": true (thanks KDBalashevich)
+
+2023.04.25 (by @veksha)
++ add: option "semantic_max_lines"
+- fix: wrong inserting of some completion items in Clangd
+- fix: weird sorting of completions from Clangd
+
+2023.04.21 (by @veksha)
++ add: new option "complete_from_text" allows to append results of 'Complete From Text' plugin to LSP results (you must update that plugin too)
+
+2023.04.13 (by @veksha)
++ add: option (global and per-server) "disabled_contexts"
+
+2023.04.11 (by @veksha)
++ add: support LSP Semantic Tokens, see the new readme.txt part about this feature
++ add: new option "servers_shutdown_max_time"
+
+2023.01.10 (by @veksha)
++ add: avoid UI freeze (1-2 sec) when plugin adds many lines to log panel
+- fix: better support 'didSave' server capability
+
+2022.11.18 (by @veksha)
++ add: support for dot-path notation in Server-specific options
+
+2022.10.28 (by Alexey T.)
+- fix: error detecting project dir if project has file(s) in its root
+- fix: macros TM_xxxx were not expanded in snippets
+
+2022.10.23 (by @veksha)
+- fix: problem with TypeScript: wrong autocompletion of "import appendFile" + unwanted brackets
+- fix: insertion of single item with "autocomplete_commit_single_item":true did not work
+- fix: with "ui_scale":125 not all buttons in hover dialog were visible
+- fix: problem with TypeScript: func-params tooltip
+- fix: problems with Lua server
+- fix: problem with Pyright server: must enable cache for this server
+
+2022.10.16 (by @veksha)
++ add: simple caching
++ add: new option: "auto_append_bracket" (and smart bracket insertion)
++ add: new options: "hard_filter" and "use_cache"
++ add: use new CudaText API: HTML tags support in completion listbox
++ add: do not search in function params, when filtering autocompletion listbox
++ add: shorten item 'kinds': 'function'->'func', 'variable'->'var' etc
+
+2022.10.15 (by @veksha)
++ add: when "function params" text is too long, e.g. for 'open(...)' in Python, then tooltip wraps
+
+2022.10.13 (by @veksha)
+- fix: Windows: compare filenames which differ in casing
+- fix: handling of untitled tabs; bonus: LSP goto features (definition/references) are now working inside unsaved tabs too
+- fix: too many errors when server's .exe file is missed
+- fix: in some cases, gutter icons appear black / not inited
+- fix: on_state must not be 'lazy'
+
+2022.09.20 (by @veksha)
++ add: support 'snippets' from servers, re-using code from 'Snippets' plugin
+
+2022.09.16 (by @veksha)
+- fix: bug with Bash server
+
+2022.09.07 (by @veksha)
++ add: all new tooltip for the "show function-hint" command / Ctrl+Shift+Space
++ add: better reaction to Left/Right arrows in completion listbox; needs CudaText 1.170+ 
++ add: for option "lint_type":"d", plugin adds tooltips for gutter-decor-icons; it needs CudaText 1.169.2+
+
+2022.08.25 (by @veksha)
++ add: use new CudaText API to show tooltips for guttter icons, when "lint_type" option is set to "d"
+
+2022.06.16 (by @veksha)
++ add: if lsp_xxx.json contains both "cmd_xxx" and "tcp_port", plugin runs the server and then listens to TCP port
+- fix: bug which prevented work of PHP LSP server
+
+2022.06.09 (by @veksha)
+- fix: hover hint dialog and autocompletion dialog could show up at the same time causing various bugs
+
+2022.05.20
++ add: Escape-key in Hover dialog closes the dialog (by Alexey T.)
++ add: implement filtering of completion-list by current word, for servers which don't do it (by @veksha)
+- fix: bug when e.g. "log()" completion is JS was shown twice: console.log(log()) (by @veksha)
+
+2022.05.12
++ add: show LSP warnings/errors in the bottom log-panel of LSP plugin (by @veksha)
++ add: prevent cmd.exe console showing on Windows (by @veksha)
+
+2021.06.14
++ add: show request-result files in an embedded editor if plugin "Embedded Editor" is installed
+
+2021.05.27
++ add: option "format_on_save"
++ change: server message-exchange speedup
+
+2021.05.22
++ add: server logs panel
++ add: server option: "log_stderr"
+
+2021.05.21
++ add: fill "Code tree" from server
+
+2021.05.16
+- fix: module 'dataclasses' was missed under Python <3.7
+
+2021.04.26
++ add: plugin allows to configure server per-project, using *.cuda-proj-lsp files located 
+	near *.cuda-proj file (for example Golang server supports this)
++ add: command "Configure server for current project"
+
+2021.04.19
++ add: options - 'lint_type' and 'lint_underline_style'
+
+2021.04.18
++ add: option "cudatext_in_py_env" - adds CudaText API to Python server
++ add: project main-file's directory as server's root_dir source
++ add: accept list of values for option `root_dir_source` for fallback
++ add: 'workspaceFolders' and 'DidChangeWorkspaceFolders' for graceful project change 
+
+2021.04.17
++ add: command "Config" writes current options to file
++ add: auto-restart LSP server on ProjManager project change
+
+2021.04.16
++ add: option "hover_additional_commands" - list of additional commands to show in hover dialog
+
+2021.04.15
++ add: support action "Format document"
++ add: support action "Format selection"
++ add: better work of action "Show function signature"
+
+2021.04.10
+initial

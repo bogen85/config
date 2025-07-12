@@ -1,0 +1,33 @@
+
+2022.06.08
+- fix: with floating terminal, bottom placeholder panel was not themed (by @veksha)
+
+2022.05.23
+- fix: memory leak after opening+closing many terminals (by @veksha)
+- fix: on Windows, better close Cmd processes (by @veksha)
+
+2022.05.08
+- fix: if terminal is 'floating', don't toggle CudaText bottom panel on a) Esc-key, b) "Rename terminal", c) "Close all terminals" (by Alexey T.)
+- fix: on "Close all terminals", clear the terminal (by Alexey T.) 
+
+2021.08.01
++ add: hotkeys Alt+Up / Alt+Down, in the input field, cycle through input history
+
+2021.07.31
++ add: allow to use CudaText theme main colors - when last color in shell theme config is '-'
+
+2021.07.27
++ add: option "lock_horizontal_scroll"
+
+2021.07.26
++ add: command "Repeat last terminal command"
+
+2021.03.04
+- fix: work on macOS for commands like "ls" which give tab-chars
+
+2021.02.23
++ add: better support for 'less' output: send scroll commands to process on arrow-down press
++ add: option 'terminal_height'
+
+2021.02.15
+initial version
