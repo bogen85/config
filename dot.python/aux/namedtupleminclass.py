@@ -19,7 +19,8 @@ def collectable(arg=None):
             return fn(*args, **kwargs)
         # Mark for b()
         wrapper._b_collect = True
-        wrapper._b_collect_name = None if callable(arg) and not isinstance(arg, str) else arg
+        wrapper._b_collect_name = arg if isinstance(arg, str) else fn.__name__
+        wrapper._b_fn = fn
         return wrapper
 
     # If used without (), arg is actually the function object
@@ -50,9 +51,10 @@ def b():
         if inspect.isfunction(val) and getattr(val, "_b_collect", False):
             qn = getattr(val, "__qualname__", "")
             if ".<locals>." in qn and qn.startswith(prefix):
-                field = getattr(val, "_b_collect_name", None) or local_name
-                field = _sanitize_field(field)
-                items.append((val.__code__.co_firstlineno, field, val))
+                name = val._b_collect_name
+                field = local_name if name == '<lambda>' else name
+                fn = val._b_fn
+                items.append((val.__code__.co_firstlineno, field, fn))
 
     items.sort(key=lambda t: t[0])
     used = {}
@@ -62,7 +64,38 @@ def b():
         final = field if i == 0 else f"{field}_{i}"
         used[field] = i + 1
         fields.append(final)
+        print(f'{i}:{final}')
         values.append(val)
 
     NT = collections.namedtuple("NestedFunctions", fields or ["_empty"])
     return NT(*values) if values else NT(None)
+
+
+def outer():
+    @collectable  # no ()
+    def f(): return "f()"
+
+    @collectable("twice")
+    def g(x): return x * 2
+
+    @collectable()
+    def h(s): return s.upper()
+
+    four = collectable('rabbit')(lambda: 'rabbit')
+
+    return b()
+
+a=outer()
+print(dir(a.f))
+print(dir(a.twice))
+print(dir(a.h))
+print(f'f:{a.f()}')
+print(f'twice:{a.twice(4)}')
+print(f'h:{a.h("dog")}')
+
+print(dir(outer))
+print(outer.__name__)
+print(outer)
+
+print(a.rabbit)
+print(a.rabbit())
