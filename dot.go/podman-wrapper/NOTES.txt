@@ -1,0 +1,1 @@
+(sudo rm -r rootfs/AlmaLinux-9.6_x64 && sudo mkdir rootfs/AlmaLinux-9.6_x64 && cd rootfs/AlmaLinux-9.6_x64 && sudo tar zxf ../../downloads/AlmaLinux-9.6_x64_20250522.0.wsl)
