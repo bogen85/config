@@ -758,9 +758,9 @@ func exitCodeFromWaitErr(err error) int {
 }
 
 func main() {
-    // Allow zero flags when config provides required values.
-    // Usage is shown later only if root/name are still missing after
-    // merging config and flags.
+	// Allow zero flags when config provides required values.
+	// Usage is shown later only if root/name are still missing after
+	// merging config and flags.
 
 	// Flags
 	flag.StringVar(&flagRoot, "root", "", "socket root path (REQUIRED if not provided in config.common.root)")

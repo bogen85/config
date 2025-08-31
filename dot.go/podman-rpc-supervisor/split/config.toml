@@ -1,0 +1,17 @@
+[common]
+root = "/tmp/csjrpc"
+name = "daemon"
+
+[server]
+startdir = ""
+
+[server.env]
+PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+FOO  = "srv"
+
+[client]
+id = ""
+verbose = true
+
+[client.env]
+FOO = "cli"

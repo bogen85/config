@@ -3,7 +3,6 @@ package csjrpc
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,33 +11,40 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/BurntSushi/toml"
 )
 
-const DefaultConfigPath = "./config.json"
+const DefaultConfigPath = "./config.toml"
 const ClientConfigEnv = "CSJRPC_CONFIG"
 
 type CommonConfig struct {
-	Root string `json:"root"`
-	Name string `json:"name"`
+	Root string `toml:"root"`
+	Name string `toml:"name"`
 }
 
 type ServerSection struct {
-	StartDir string            `json:"startdir"`
-	Env      map[string]string `json:"env"`
+	StartDir string            `toml:"startdir"`
+	Env      map[string]string `toml:"env"`
 }
 
 type ClientSection struct {
-	Env     map[string]string `json:"env"`
-	ID      string            `json:"id"`
-	Summary bool              `json:"summary"`
+	Env     map[string]string `toml:"env"`
+	ID      string            `toml:"id"`
+	Summary bool              `toml:"summary"`
 }
 
 type Config struct {
-	Common CommonConfig  `json:"common"`
-	Server ServerSection `json:"server"`
-	Client ClientSection `json:"client"`
+	Common CommonConfig  `toml:"common"`
+	Server ServerSection `toml:"server"`
+	Client ClientSection `toml:"client"`
 }
 
+// LoadConfig loads configuration from TOML file at path.
+//   - If path == "" uses DefaultConfigPath
+//   - If file does not exist: (zero, false, nil)
+//   - If file exists but bad TOML: (zero, true, err)
+//   - On success: (cfg, true, nil)
 func LoadConfig(path string) (Config, bool, error) {
 	if path == "" {
 		path = DefaultConfigPath
@@ -58,8 +64,8 @@ func LoadConfig(path string) (Config, bool, error) {
 	if err != nil {
 		return cfg, false, err
 	}
-	if err := json.Unmarshal(b, &cfg); err != nil {
-		return cfg, false, err
+	if _, err := toml.Decode(string(b), &cfg); err != nil {
+		return cfg, true, err
 	}
 	return cfg, true, nil
 }
@@ -83,7 +89,8 @@ func logWithCaller(level, msg string, args ...any) {
 		line = 0
 	}
 	base := filepath.Base(file)
-	fmt.Fprintf(os.Stderr, "%s [%s] %s:%d: %s\n", ts, strings.ToUpper(level), base, line, fmt.Sprintf(msg, args...))
+	fmt.Fprintf(os.Stderr, "%s [%s] %s:%d: %s\n",
+		ts, strings.ToUpper(level), base, line, fmt.Sprintf(msg, args...))
 }
 
 func Infof(msg string, args ...any)  { logWithCaller("info", msg, args...) }
@@ -174,7 +181,10 @@ func SanitizeMachineID(s string) (string, error) {
 		return "", errors.New("empty machine-id")
 	}
 	for _, r := range s {
-		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') || r == '-' {
+		if (r >= '0' && r <= '9') ||
+			(r >= 'a' && r <= 'f') ||
+			(r >= 'A' && r <= 'F') ||
+			r == '-' {
 			continue
 		}
 		return "", fmt.Errorf("invalid machine-id char: %q", r)
