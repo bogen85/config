@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+#export TERM="${TERM:-xterm-256color}"
+#export TERM=xterm-256color
+
+# Fix TERM if unset or "dumb"
+if [ -z "${TERM:-}" ] || [ "$TERM" = "dumb" ]; then
+  export TERM="xterm-256color"
+fi
+
+exec /bin/bash --login -i

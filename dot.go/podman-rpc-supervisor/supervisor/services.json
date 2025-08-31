@@ -1,0 +1,15 @@
+{
+  "jsonrpc": {
+    "path": "../main",
+    "args": ["-root", "/tmp/jrpc", "-mode", "server", "-name", "daemon"],
+    "restart": true,
+    "dir": ".",
+    "grace": "30s"
+  },
+  "telnetd": {
+    "path": "busybox",
+    "args": ["telnetd", "-f", "/dev/null", "-F", "-l", "./bash-login", "-b", "127.0.0.1", "-p", "2323"],
+    "restart": true,
+    "dir": "."
+  }
+}
