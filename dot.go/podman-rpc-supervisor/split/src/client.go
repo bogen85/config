@@ -20,10 +20,6 @@ import (
 	"local/csjrpc"
 )
 
-/* ===========================
-   Flags / CLI
-   =========================== */
-
 var (
 	flagRoot      string
 	flagName      string
@@ -34,6 +30,7 @@ var (
 	flagID        string
 	flagSummary   bool
 	flagConfig    string
+	flagServer    bool
 )
 
 type envList []string
@@ -46,22 +43,6 @@ func (e *envList) Set(s string) error {
 	*e = append(*e, s)
 	return nil
 }
-
-func init() {
-	flag.StringVar(&flagRoot, "root", "", "socket root path (REQUIRED if not provided in config.common.root)")
-	flag.StringVar(&flagName, "name", "", "server socket name to connect to (REQUIRED if not provided in config.common.name)")
-	flag.StringVar(&flagStartDir, "startdir", "", "per-request working directory")
-	flag.StringVar(&flagStdinStr, "stdin", "", "literal stdin data (mutually exclusive with -stdinfile)")
-	flag.StringVar(&flagStdinFile, "stdinfile", "", "path to file used as stdin (mutually exclusive with -stdin)")
-	flag.Var(&flagEnvs, "env", "repeatable env (KEY=VAL or KEY) overlay for child process (repeat)")
-	flag.StringVar(&flagID, "id", "", "machine ID override (else /etc/machine-id; else random; can come from config.client.id)")
-	flag.BoolVar(&flagSummary, "summary", false, "emit execution summary via logger (can be enabled by config.client.summary)")
-	flag.StringVar(&flagConfig, "config", "", "path to JSON config (optional; default ./config.json or $CSJRPC_CONFIG). If provided and missing, it's an error.")
-}
-
-/* ===========================
-   Client services
-   =========================== */
 
 type reorderSink struct {
 	mu     sync.Mutex
@@ -98,10 +79,9 @@ type StderrService struct{ sink *reorderSink }
 func (s *StdoutService) WriteLine(in csjrpc.Line, _ *struct{}) error { s.sink.write(in); return nil }
 func (s *StderrService) WriteLine(in csjrpc.Line, _ *struct{}) error { s.sink.write(in); return nil }
 
-// Stdin: pull-based RPC
 type StdinService struct {
 	mu sync.Mutex
-	r  io.Reader // from -stdin or -stdinfile; may be nil
+	r  io.Reader
 }
 
 func (s *StdinService) ReadChunk(args csjrpc.StdinReadArgs, reply *csjrpc.StdinReadReply) error {
@@ -132,12 +112,7 @@ func (s *StdinService) ReadChunk(args csjrpc.StdinReadArgs, reply *csjrpc.StdinR
 	return nil
 }
 
-/* ===========================
-   Socket helper (client side)
-   =========================== */
-
 func serveOnSocket(sockPath, serviceName string, svc any, ready chan<- struct{}) (net.Listener, error) {
-	// Refuse to overwrite an existing socket
 	if _, err := os.Lstat(sockPath); err == nil {
 		return nil, fmt.Errorf("refusing to overwrite existing socket: %s", sockPath)
 	} else if !os.IsNotExist(err) {
@@ -155,7 +130,7 @@ func serveOnSocket(sockPath, serviceName string, svc any, ready chan<- struct{})
 		close(ready)
 		for {
 			conn, err := l.Accept()
-		 if err != nil {
+			if err != nil {
 				return
 			}
 			go rpc.ServeCodec(jsonrpc.NewServerCodec(conn))
@@ -164,11 +139,17 @@ func serveOnSocket(sockPath, serviceName string, svc any, ready chan<- struct{})
 	return l, nil
 }
 
-/* ===========================
-   Client runner
-   =========================== */
-
 func main() {
+	flag.StringVar(&flagRoot, "root", "", "socket root path (REQUIRED if not provided in config.common.root)")
+	flag.StringVar(&flagName, "name", "", "server socket name to connect to (REQUIRED if not provided in config.common.name)")
+	flag.StringVar(&flagStartDir, "startdir", "", "per-request working directory")
+	flag.StringVar(&flagStdinStr, "stdin", "", "literal stdin data (mutually exclusive with -stdinfile)")
+	flag.StringVar(&flagStdinFile, "stdinfile", "", "path to file used as stdin (mutually exclusive with -stdin)")
+	flag.Var(&flagEnvs, "env", "repeatable env (KEY=VAL or KEY) overlay for child process (repeat)")
+	flag.StringVar(&flagID, "id", "", "machine ID override (else /etc/machine-id; else random; can come from config.client.id)")
+	flag.BoolVar(&flagSummary, "summary", false, "emit execution summary via logger (can be enabled by config.client.summary)")
+	flag.StringVar(&flagConfig, "config", "", "path to JSON config (optional; default ./config.json or $CSJRPC_CONFIG). If provided and missing, it's an error.")
+	flag.BoolVar(&flagServer, "server", false, "admin mode: run a server command instead of executing a process")
 	flag.Parse()
 
 	if flagStdinStr != "" && flagStdinFile != "" {
@@ -176,37 +157,36 @@ func main() {
 		os.Exit(2)
 	}
 
-	// ---- Load config (client precedence: default < env < --config) ----
 	cfgPath := csjrpc.DefaultConfigPath
 	if envPath := os.Getenv(csjrpc.ClientConfigEnv); envPath != "" {
 		cfgPath = envPath
 	}
-	cfgPathProvided := false
 	if flagConfig != "" {
 		cfgPath = flagConfig
-		cfgPathProvided = true
 	}
 	cfg, found, err := csjrpc.LoadConfig(cfgPath)
 	if err != nil {
-		if cfgPathProvided {
+		if flagConfig != "" {
 			csjrpc.Errorf("load config %q: %v", cfgPath, err)
 			os.Exit(2)
 		}
 		found = false
 	}
-	if cfgPathProvided && !found {
+	if flagConfig != "" && !found {
 		csjrpc.Errorf("config file not found: %s", cfgPath)
 		os.Exit(2)
 	}
 
-	// Effective values: config -> flags (flags override)
 	root := cfg.Common.Root
 	name := cfg.Common.Name
-	if flagRoot != "" { root = flagRoot }
-	if flagName != "" { name = flagName }
-
+	if flagRoot != "" {
+		root = flagRoot
+	}
+	if flagName != "" {
+		name = flagName
+	}
 	if root == "" || name == "" {
-		csjrpc.Infof( "usage: %s -root <path> -name <name> [-startdir DIR] [-stdin STR|-stdinfile PATH] [--env ...] [-id ID] [-summary] [-config PATH]\n", filepath.Base(os.Args[0]))
+		fmt.Fprintf(os.Stderr, "usage: %s -root <path> -name <name> [-startdir DIR] [-stdin STR|-stdinfile PATH] [--env ...] [-id ID] [-summary] [-config PATH]\n", filepath.Base(os.Args[0]))
 		os.Exit(2)
 	}
 
@@ -218,7 +198,6 @@ func main() {
 			machineID = csjrpc.LoadMachineID("")
 		}
 	} else {
-		// validate
 		if _, err := csjrpc.SanitizeMachineID(machineID); err != nil {
 			csjrpc.Errorf("invalid --id: %v", err)
 			os.Exit(2)
@@ -231,7 +210,6 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Build per-request env from config then flags (flags override)
 	clientOverlay := csjrpc.EnvMapToList(cfg.Client.Env)
 	for _, e := range flagEnvs {
 		if strings.Contains(e, "=") {
@@ -246,7 +224,6 @@ func main() {
 		clientOverlay = append(clientOverlay, e+"="+val)
 	}
 
-	// Prepare callback sockets dir
 	pid := os.Getpid()
 	dir := csjrpc.DeriveClientSocketDir(absRoot, machineID, pid)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -254,8 +231,6 @@ func main() {
 		os.Exit(2)
 	}
 	stdoutSock, stderrSock, stdinSock := csjrpc.DeriveClientSockets(absRoot, machineID, pid)
-
-	// Refuse to overwrite existing sockets
 	for _, s := range []string{stdoutSock, stderrSock, stdinSock} {
 		if _, err := os.Lstat(s); err == nil {
 			csjrpc.Errorf("refusing to overwrite existing socket: %s", s)
@@ -266,7 +241,6 @@ func main() {
 		}
 	}
 
-	// Start stdout/stderr services
 	stdoutReady := make(chan struct{})
 	stdoutL, err := serveOnSocket(stdoutSock, "Stdout", &StdoutService{sink: newReorderSink(os.Stdout)}, stdoutReady)
 	if err != nil {
@@ -285,7 +259,6 @@ func main() {
 	defer stderrL.Close()
 	<-stderrReady
 
-	// Prepare stdin service
 	var stdinReader io.Reader
 	if flagStdinFile != "" {
 		f, err := os.Open(flagStdinFile)
@@ -309,7 +282,6 @@ func main() {
 	defer stdinL.Close()
 	<-stdinReady
 
-	// Connect to server
 	mainSock := filepath.Join(absRoot, name+".sock")
 	conn, err := net.Dial("unix", mainSock)
 	if err != nil {
@@ -319,7 +291,42 @@ func main() {
 	defer conn.Close()
 	client := jsonrpc.NewClient(conn)
 
-	// Ctrl-C handling: send Cancel and then wait for Process to return
+	// Admin mode
+	if flagServer {
+		reqStart := time.Now().UTC()
+		var arep csjrpc.AdminReply
+		cmdline := flag.Args()
+		cmd := ""
+		var aargs []string
+		if len(cmdline) > 0 {
+			cmd = cmdline[0]
+			aargs = cmdline[1:]
+		} else {
+			cmd = "ls"
+		}
+		err = client.Call("ServerService.Admin", csjrpc.AdminArgs{
+			MachineID: machineID,
+			PID:       pid,
+			Command:   cmd,
+			Args:      aargs,
+		}, &arep)
+		reqEnd := time.Now().UTC()
+		if err != nil {
+			csjrpc.Errorf("rpc error: %v", err)
+			os.Exit(1)
+		}
+		finalSummary := flagSummary || cfg.Client.Summary
+		if finalSummary {
+			rtt := reqEnd.Sub(reqStart).Milliseconds()
+			csjrpc.Infof("admin=%q args=%q rtt_ms=%d rc=%d err=%q", cmd, strings.Join(aargs, " "), rtt, arep.ReturnCode, arep.Error)
+		}
+		if arep.Error != "" {
+			fmt.Fprintln(os.Stderr, arep.Error)
+		}
+		os.Exit(arep.ReturnCode)
+	}
+
+	// Process mode
 	localSig := make(chan os.Signal, 1)
 	signal.Notify(localSig, syscall.SIGINT, syscall.SIGTERM)
 	var cancelOnce sync.Once
@@ -334,7 +341,6 @@ func main() {
 		})
 	}()
 
-	// Command & args (positional after flags)
 	cmdline := flag.Args()
 	var command string
 	var cmdArgs []string
@@ -344,15 +350,11 @@ func main() {
 			cmdArgs = cmdline[1:]
 		}
 	} else {
-		// empty => ping
 		command = ""
 		cmdArgs = nil
 	}
 
-	// Client timing
 	reqStart := time.Now().UTC()
-
-	// RPC call
 	var resp csjrpc.ProcessReply
 	err = client.Call("ServerService.Process", csjrpc.ProcessArgs{
 		MachineID: machineID,
@@ -362,10 +364,8 @@ func main() {
 		Args:      cmdArgs,
 		Env:       clientOverlay,
 	}, &resp)
-
 	reqEnd := time.Now().UTC()
 
-	// Cleanup sockets dir
 	_ = os.Remove(stdoutSock)
 	_ = os.Remove(stderrSock)
 	_ = os.Remove(stdinSock)
@@ -373,16 +373,13 @@ func main() {
 
 	if err != nil {
 		csjrpc.Errorf("rpc error: %v", err)
-		// Unknown server failure → mimic rc=1
 		os.Exit(1)
 	}
 
-	// If server provided an error message (setup/exec failure), show it on stderr
 	if resp.Error != "" {
 		fmt.Fprintln(os.Stderr, resp.Error)
 	}
 
-	// Verbose summary (config OR flag)
 	finalSummary := flagSummary || cfg.Client.Summary
 	if finalSummary {
 		rtt := reqEnd.Sub(reqStart).Milliseconds()
@@ -392,14 +389,12 @@ func main() {
 		}
 		cmdShown := resp.ResolvedCmdLine
 		if cmdShown == "" {
-			// For ping or errors, reconstruct reasonable view
 			cmdShown = strings.Join(append([]string{command}, cmdArgs...), " ")
 			if strings.TrimSpace(command) == "" {
 				cmdShown = "(ping)"
 			}
 		}
-		csjrpc.Infof(
-			"command=%q client_start=%s client_end=%s rtt_ms=%d server_start=%s server_end=%s exec_ms=%d overhead_ms=%d rc=%d stopped=%v stopped_by=%q\n",
+		csjrpc.Infof("command=%q client_start=%s client_end=%s rtt_ms=%d server_start=%s server_end=%s exec_ms=%d overhead_ms=%d rc=%d stopped=%v stopped_by=%q",
 			cmdShown,
 			reqStart.Format(time.RFC3339Nano),
 			reqEnd.Format(time.RFC3339Nano),
@@ -414,6 +409,5 @@ func main() {
 		)
 	}
 
-	// Exit with server-provided return code
 	os.Exit(resp.ReturnCode)
 }

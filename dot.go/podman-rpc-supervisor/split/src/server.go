@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -13,17 +14,15 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"local/csjrpc"
 )
-
-/* ===========================
-   Flags / CLI
-   =========================== */
 
 var (
 	flagRoot     string
@@ -44,36 +43,29 @@ func (e *envList) Set(s string) error {
 	return nil
 }
 
-func init() {
-	flag.StringVar(&flagRoot, "root", "", "socket root path (REQUIRED if not provided in config.common.root)")
-	flag.StringVar(&flagName, "name", "", "server socket name (listens on <root>/<name>.sock) (REQUIRED if not provided in config.common.name)")
-	flag.StringVar(&flagStartDir, "startdir", "", "server: chdir on startup")
-	flag.Var(&flagEnvs, "env", "repeatable env (KEY=VAL or KEY) for server base environment (repeat)")
-	flag.StringVar(&flagConfig, "config", "", "path to JSON config (optional; default ./config.json). If provided and missing, it's an error.")
-}
-
-/* ===========================
-   Server session management
-   =========================== */
-
 type session struct {
+	serial    int64
+	cmdline   string
 	mu        sync.Mutex
 	machineID string
 	pid       int
 	cancel    context.CancelFunc
-	stoppedBy string // "", "client", "server"
+	stoppedBy string
 	proc      *os.Process
 }
 
 type sessionTable struct {
-	mu sync.Mutex
-	m  map[string]*session
+	nextSerial int64
+	mu         sync.Mutex
+	m          map[string]*session
 }
 
 func newSessionTable() *sessionTable { return &sessionTable{m: make(map[string]*session)} }
 
 func (t *sessionTable) add(key string, s *session) {
 	t.mu.Lock()
+	s.serial = t.nextSerial
+	t.nextSerial++
 	t.m[key] = s
 	t.mu.Unlock()
 }
@@ -104,15 +96,11 @@ func (t *sessionTable) cancelAll(by string) {
 	}
 }
 
-/* ===========================
-   Server RPC service
-   =========================== */
-
 type ServerService struct {
 	sessions      *sessionTable
 	wg            sync.WaitGroup
 	root          string
-	serverBaseEnv []string // KEY=VAL, built at startup per --env and config
+	serverBaseEnv []string
 }
 
 func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessReply) error {
@@ -122,7 +110,6 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 	key := csjrpc.IdPidKey(args.MachineID, args.PID)
 	csjrpc.Infof("Process start: key=%s cmd=%q args=%d startdir=%q", key, args.Command, len(args.Args), args.StartDir)
 
-	// Validate StartDir if provided
 	workDir := args.StartDir
 	if workDir != "" {
 		if !filepath.IsAbs(workDir) {
@@ -136,7 +123,6 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 		}
 	}
 
-	// Prepare context & session
 	ctx, cancel := context.WithCancel(context.Background())
 	sess := &session{machineID: args.MachineID, pid: args.PID, cancel: cancel}
 	s.sessions.add(key, sess)
@@ -147,7 +133,6 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 
 	stdoutSock, stderrSock, stdinSock := csjrpc.DeriveClientSockets(s.root, args.MachineID, args.PID)
 
-	// Wait for client sockets to appear (up to a few seconds)
 	if err := waitForSocket(stdoutSock, 5*time.Second); err != nil {
 		reply.FailNow(2, "stdout socket not available: "+err.Error())
 		csjrpc.Errorf("key=%s stdout socket error: %v", key, err)
@@ -164,7 +149,6 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 		return nil
 	}
 
-	// Connect to client services
 	stdoutConn, err := net.Dial("unix", stdoutSock)
 	if err != nil {
 		reply.FailNow(2, "connect stdout service: "+err.Error())
@@ -192,7 +176,6 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 	defer stdinConn.Close()
 	stdinCli := jsonrpc.NewClient(stdinConn)
 
-	// Ping behavior (empty command)
 	if strings.TrimSpace(args.Command) == "" {
 		_ = stdoutCli.Call("Stdout.WriteLine", csjrpc.Line{Index: 0, Text: "server ping to stdout"}, &struct{}{})
 		_ = stderrCli.Call("Stderr.WriteLine", csjrpc.Line{Index: 0, Text: "server ping to stderr"}, &struct{}{})
@@ -205,10 +188,8 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 		return nil
 	}
 
-	// Build env for child: server base -> client overlay
 	finalEnv := mergeEnv(os.Environ(), s.serverBaseEnv, args.Env)
 
-	// Resolve command path
 	resolvedPath, rc, err := resolveCommandPath(args.Command, workDirOrCwd(workDir), finalEnv)
 	if err != nil {
 		reply.FailNow(rc, err.Error())
@@ -216,13 +197,11 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 		return nil
 	}
 
-	// Prepare child process
 	cmd := exec.Command(resolvedPath, args.Args...)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
 	cmd.Env = finalEnv
-	// Make a new process group so we can signal the whole tree
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -235,15 +214,12 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 		reply.FailNow(2, "stderr pipe: "+err.Error())
 		return nil
 	}
-
-	// We'll provide stdin via a pipe and pull from client's stdin service
 	stdinWriter, err := cmd.StdinPipe()
 	if err != nil {
 		reply.FailNow(2, "stdin pipe: "+err.Error())
 		return nil
 	}
 
-	// Time stamps (server-side)
 	execStart := time.Now().UTC()
 
 	if err := cmd.Start(); err != nil {
@@ -252,18 +228,19 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 	}
 	reply.ResolvedCmdLine = strings.Join(append([]string{resolvedPath}, args.Args...), " ")
 
-	// Register process to the session
+	// record cmdline for admin ls
+	sess.mu.Lock()
+	sess.cmdline = reply.ResolvedCmdLine
+	sess.mu.Unlock()
+
 	sess.mu.Lock()
 	sess.proc = cmd.Process
 	sess.mu.Unlock()
 
 	var wgIO sync.WaitGroup
-	// Signal for goroutines when the child process has exited.
 	procDone := make(chan struct{})
-
 	wgIO.Add(3)
 
-	// stdout pump
 	go func() {
 		defer wgIO.Done()
 		sc := bufio.NewScanner(stdoutPipe)
@@ -273,10 +250,8 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 			_ = stdoutCli.Call("Stdout.WriteLine", csjrpc.Line{Index: idx, Text: sc.Text()}, &struct{}{})
 			idx++
 		}
-		// ignore sc.Err(); if the process dies, pipes close
 	}()
 
-	// stderr pump
 	go func() {
 		defer wgIO.Done()
 		sc := bufio.NewScanner(stderrPipe)
@@ -288,13 +263,10 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 		}
 	}()
 
-	// stdin pump (pull from client's stdin service)
 	go func() {
 		defer wgIO.Done()
 		const chunk = 64 * 1024
 		for {
-			// Fast exit on cancel or when the child process has exited,
-			// even if the client hasn't provided EOF on stdin.
 			select {
 			case <-ctx.Done():
 				_ = stdinWriter.Close()
@@ -304,15 +276,12 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 				return
 			default:
 			}
-
 			var rep csjrpc.StdinReadReply
 			err := stdinCli.Call("Stdin.ReadChunk", csjrpc.StdinReadArgs{Max: chunk}, &rep)
 			if err != nil {
-				// RPC broke (client closed, etc.) -> stop and close child's stdin.
 				break
 			}
 			if rep.Err != "" {
-				// Client-side read error -> stop.
 				break
 			}
 			if len(rep.Data) > 0 {
@@ -323,7 +292,6 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 			if rep.EOF {
 				break
 			}
-			// No data and not EOF: avoid a busy loop when client has nothing ready.
 			if len(rep.Data) == 0 {
 				time.Sleep(10 * time.Millisecond)
 			}
@@ -331,28 +299,22 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 		_ = stdinWriter.Close()
 	}()
 
-	// Cancellation watcher: on ctx.Done, SIGTERM -> wait a bit -> SIGKILL
 	done := make(chan struct{})
 	go func(pid int) {
 		defer close(done)
 		<-ctx.Done()
 		csjrpc.Infof("key=%s cancel received; signaling process group", key)
 		_ = signalGroup(pid, syscall.SIGTERM)
-		// small grace period
 		time.Sleep(1 * time.Second)
 		_ = signalGroup(pid, syscall.SIGKILL)
 	}(cmd.Process.Pid)
 
 	waitErr := cmd.Wait()
 	execEnd := time.Now().UTC()
-	// Notify I/O goroutines the process is gone; ensure stdin writer is shut.
 	close(procDone)
 	_ = stdinWriter.Close()
-
-	// Ensure I/O pumps finish
 	wgIO.Wait()
 
-	// Determine return code & stopped state
 	rc = exitCodeFromWaitErr(waitErr)
 	reply.ReturnCode = rc
 	reply.Stopped = false
@@ -370,6 +332,125 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 
 	csjrpc.Infof("Process end: key=%s rc=%d stopped=%v by=%s elapsed=%dms", key, rc, reply.Stopped, reply.StoppedBy, reply.ElapsedMillis)
 	return nil
+}
+
+func (s *ServerService) Admin(args csjrpc.AdminArgs, reply *csjrpc.AdminReply) error {
+	stdoutSock, stderrSock, _ := csjrpc.DeriveClientSockets(s.root, args.MachineID, args.PID)
+
+	stdoutConn, err := net.Dial("unix", stdoutSock)
+	if err != nil {
+		reply.ReturnCode = 2
+		reply.Error = "connect stdout service: " + err.Error()
+		csjrpc.Errorf("admin stdout dial: %v", err)
+		return nil
+	}
+	defer stdoutConn.Close()
+	stdoutCli := jsonrpc.NewClient(stdoutConn)
+
+	stderrConn, err := net.Dial("unix", stderrSock)
+	if err != nil {
+		reply.ReturnCode = 2
+		reply.Error = "connect stderr service: " + err.Error()
+		csjrpc.Errorf("admin stderr dial: %v", err)
+		return nil
+	}
+	defer stderrConn.Close()
+	stderrCli := jsonrpc.NewClient(stderrConn)
+
+	cmd := strings.TrimSpace(args.Command)
+	if cmd == "" {
+		cmd = "ls"
+	}
+
+	switch cmd {
+	case "ls":
+		showCmdline := false
+		showAll := false
+		for _, a := range args.Args {
+			switch a {
+			case "--cmdline":
+				showCmdline = true
+			case "--all":
+				showAll = true
+			default:
+				_ = stderrCli.Call("Stderr.WriteLine", csjrpc.Line{Index: 0, Text: "unknown argument: " + a}, &struct{}{})
+				reply.ReturnCode = 2
+				return nil
+			}
+		}
+
+		idx := 0
+		if showAll {
+			var b1 bytes.Buffer
+			tw1 := tabwriter.NewWriter(&b1, 0, 4, 2, ' ', 0)
+			if showCmdline {
+				fmt.Fprintf(tw1, "admin\t%s\t%d\tadmin\t(you)\t\n", args.MachineID, args.PID)
+			} else {
+				fmt.Fprintf(tw1, "admin\t%s\t%d\tadmin\t(you)\n", args.MachineID, args.PID)
+			}
+			_ = tw1.Flush()
+			for _, line := range strings.Split(strings.TrimRight(b1.String(), "\n"), "\n") {
+				_ = stdoutCli.Call("Stdout.WriteLine", csjrpc.Line{Index: idx, Text: line}, &struct{}{})
+				idx++
+			}
+			_ = stdoutCli.Call("Stdout.WriteLine", csjrpc.Line{Index: idx, Text: ""}, &struct{}{})
+			idx++
+		}
+
+		type row struct {
+			serial  int64
+			machine string
+			pid     int
+			state   string
+			cmdline string
+		}
+		var rows []row
+		s.sessions.mu.Lock()
+		for _, se := range s.sessions.m {
+			se.mu.Lock()
+			st := "running"
+			if se.stoppedBy != "" {
+				st = "stopping(by=" + se.stoppedBy + ")"
+			}
+			rows = append(rows, row{
+				serial:  se.serial,
+				machine: se.machineID,
+				pid:     se.pid,
+				state:   st,
+				cmdline: se.cmdline,
+			})
+			se.mu.Unlock()
+		}
+		s.sessions.mu.Unlock()
+		sort.Slice(rows, func(i, j int) bool { return rows[i].serial < rows[j].serial })
+
+		var b2 bytes.Buffer
+		tw2 := tabwriter.NewWriter(&b2, 0, 4, 2, ' ', 0)
+		if showCmdline {
+			fmt.Fprintln(tw2, "ID\tMACHINE\tPID\tSTATE\tNOTE\tCMDLINE")
+		} else {
+			fmt.Fprintln(tw2, "ID\tMACHINE\tPID\tSTATE\tNOTE")
+		}
+		for _, r := range rows {
+			if showCmdline {
+				fmt.Fprintf(tw2, "%d\t%s\t%d\t%s\t\t%s\n", r.serial, r.machine, r.pid, r.state, r.cmdline)
+			} else {
+				fmt.Fprintf(tw2, "%d\t%s\t%d\t%s\t\n", r.serial, r.machine, r.pid, r.state)
+			}
+		}
+		_ = tw2.Flush()
+		for _, line := range strings.Split(strings.TrimRight(b2.String(), "\n"), "\n") {
+			_ = stdoutCli.Call("Stdout.WriteLine", csjrpc.Line{Index: idx, Text: line}, &struct{}{})
+			idx++
+		}
+		reply.ReturnCode = 0
+		return nil
+
+	default:
+		_ = stderrCli.Call("Stderr.WriteLine", csjrpc.Line{Index: 0, Text: "unknown server command: " + cmd}, &struct{}{})
+		reply.ReturnCode = 2
+		return nil
+	}
 }
 
 func (s *ServerService) Cancel(args csjrpc.CancelArgs, reply *csjrpc.CancelReply) error {
@@ -393,10 +474,6 @@ func (s *ServerService) Cancel(args csjrpc.CancelArgs, reply *csjrpc.CancelReply
 	return nil
 }
 
-/* ===========================
-   Utilities (server)
-   =========================== */
-
 func waitForSocket(path string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
@@ -415,11 +492,9 @@ func waitForSocket(path string, timeout time.Duration) error {
 }
 
 func signalGroup(pid int, sig syscall.Signal) error {
-	// negative pid => signal process group
 	return syscall.Kill(-pid, sig)
 }
 
-// mergeEnv merges osEnv -> serverBase -> clientOverlay (client wins on conflicts).
 func mergeEnv(osEnv []string, serverBase []string, clientOverlay []string) []string {
 	m := make(map[string]string, len(osEnv)+len(serverBase)+len(clientOverlay))
 	for _, kv := range osEnv {
@@ -465,7 +540,6 @@ func workDirOrCwd(workDir string) string {
 }
 
 func resolveCommandPath(cmdStr, workDir string, env []string) (string, int, error) {
-	// Build PATH map from env
 	var PATH string
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "PATH=") {
@@ -483,7 +557,6 @@ func resolveCommandPath(cmdStr, workDir string, env []string) (string, int, erro
 	} else if strings.ContainsRune(cmdStr, '/') {
 		candidate = filepath.Clean(filepath.Join(workDir, cmdStr))
 	} else {
-		// search PATH
 		for _, dir := range filepath.SplitList(PATH) {
 			dirToUse := dir
 			if dirToUse == "" {
@@ -502,18 +575,14 @@ func resolveCommandPath(cmdStr, workDir string, env []string) (string, int, erro
 		}
 	}
 
-	// Resolve symlinks
 	resolved, err := filepath.EvalSymlinks(candidate)
 	if err != nil {
-		// If not found after resolving, treat as not found
 		return "", 127, fmt.Errorf("resolve symlinks: %v", err)
 	}
-	// Must be absolute
 	if !filepath.IsAbs(resolved) {
 		resolved = filepath.Clean(filepath.Join(workDir, resolved))
 	}
 
-	// Validate
 	if !exists(resolved) {
 		return "", 127, fmt.Errorf("no such file: %s", resolved)
 	}
@@ -552,7 +621,6 @@ func exitCodeFromWaitErr(err error) int {
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		// On Unix, extract wait status
 		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
 			if status.Signaled() {
 				return 128 + int(status.Signal())
@@ -560,44 +628,42 @@ func exitCodeFromWaitErr(err error) int {
 			return status.ExitStatus()
 		}
 	}
-	// Fallback (treat as generic failure)
 	return 1
 }
 
-/* ===========================
-   Server runner
-   =========================== */
-
 func main() {
-	// Flags
+	flag.StringVar(&flagRoot, "root", "", "socket root path (REQUIRED if not provided in config.common.root)")
+	flag.StringVar(&flagName, "name", "", "server socket name (listens on <root>/<name>.sock) (REQUIRED if not provided in config.common.name)")
+	flag.StringVar(&flagStartDir, "startdir", "", "server: chdir on startup")
+	flag.Var(&flagEnvs, "env", "repeatable env (KEY=VAL or KEY) for server base environment (repeat)")
+	flag.StringVar(&flagConfig, "config", "", "path to JSON config (optional; default ./config.json). If provided and missing, it's an error.")
 	flag.Parse()
 
-	// Load config (default if not specified)
 	cfgPath := csjrpc.DefaultConfigPath
 	if flagConfig != "" {
 		cfgPath = flagConfig
 	}
 	cfg, found, err := csjrpc.LoadConfig(cfgPath)
 	if err != nil {
-		// If user explicitly provided --config and it's broken/missing, hard error.
 		if flagConfig != "" {
 			csjrpc.Errorf("load config %q: %v", cfgPath, err)
 			os.Exit(2)
 		}
-		// otherwise continue without config
 		found = false
 	}
-	// Hard-stop if --config was provided but not found
 	if flagConfig != "" && !found {
 		csjrpc.Errorf("config file not found: %s", cfgPath)
 		os.Exit(2)
 	}
 
-	// Effective values: config -> flags (flags override)
 	root := cfg.Common.Root
 	name := cfg.Common.Name
-	if flagRoot != "" { root = flagRoot }
-	if flagName != "" { name = flagName }
+	if flagRoot != "" {
+		root = flagRoot
+	}
+	if flagName != "" {
+		name = flagName
+	}
 
 	if root == "" || name == "" {
 		fmt.Fprintf(os.Stderr, "usage: %s -root <path> -name <name> [-startdir DIR] [--env ...] [-config PATH]\n", filepath.Base(os.Args[0]))
@@ -614,7 +680,6 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Server base env: from config then flags (flags override)
 	serverBase := csjrpc.EnvMapToList(cfg.Server.Env)
 	for _, e := range flagEnvs {
 		if strings.Contains(e, "=") {
@@ -629,7 +694,6 @@ func main() {
 		serverBase = append(serverBase, e+"="+val)
 	}
 
-	// Ensure root exists (do not clear it)
 	if fi, err := os.Stat(absRoot); err != nil {
 		if os.IsNotExist(err) {
 			if err := os.MkdirAll(absRoot, 0o755); err != nil {
@@ -648,7 +712,6 @@ func main() {
 		csjrpc.Infof("server root: %s", absRoot)
 	}
 
-	// Optional chdir at startup (config then flag override)
 	startDir := cfg.Server.StartDir
 	if flagStartDir != "" {
 		startDir = flagStartDir
@@ -662,7 +725,6 @@ func main() {
 		csjrpc.Infof("server cwd: %s", cwd)
 	}
 
-	// Main RPC socket (fail if already exists)
 	mainSock := filepath.Join(absRoot, name+".sock")
 	if _, err := os.Lstat(mainSock); err == nil {
 		csjrpc.Errorf("refusing to overwrite existing socket: %s", mainSock)
@@ -689,7 +751,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Graceful shutdown
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -699,16 +760,14 @@ func main() {
 		_ = l.Close()
 	}()
 
-	// Accept loop
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			break // listener closed
+			break
 		}
 		go rpc.ServeCodec(jsonrpc.NewServerCodec(conn))
 	}
 
-	// Wait for in-flight Process calls
 	svc.wg.Wait()
 	_ = os.Remove(mainSock)
 	csjrpc.Infof("server shutdown complete")

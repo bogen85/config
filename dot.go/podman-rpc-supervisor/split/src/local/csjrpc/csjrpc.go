@@ -14,10 +14,8 @@ import (
 	"time"
 )
 
-// ===== Config =====
-
-const DefaultConfigPath = "./config.json"   // current directory default
-const ClientConfigEnv = "CSJRPC_CONFIG"     // client-only env override
+const DefaultConfigPath = "./config.json"
+const ClientConfigEnv = "CSJRPC_CONFIG"
 
 type CommonConfig struct {
 	Root string `json:"root"`
@@ -36,13 +34,11 @@ type ClientSection struct {
 }
 
 type Config struct {
-	Common CommonConfig `json:"common"`
+	Common CommonConfig  `json:"common"`
 	Server ServerSection `json:"server"`
 	Client ClientSection `json:"client"`
 }
 
-// LoadConfig reads a JSON config file. If the path is empty, DefaultConfigPath is used.
-// Returns (cfg, found, err). found=false when the file does not exist.
 func LoadConfig(path string) (Config, bool, error) {
 	if path == "" {
 		path = DefaultConfigPath
@@ -68,7 +64,6 @@ func LoadConfig(path string) (Config, bool, error) {
 	return cfg, true, nil
 }
 
-// EnvMapToList converts {"K":"V"} to []{"K=V"} (sorted order not guaranteed).
 func EnvMapToList(m map[string]string) []string {
 	if len(m) == 0 {
 		return nil
@@ -80,11 +75,8 @@ func EnvMapToList(m map[string]string) []string {
 	return out
 }
 
-// ===== Logging (ts + file:line) =====
-
 func logWithCaller(level, msg string, args ...any) {
 	ts := time.Now().UTC().Format(time.RFC3339Nano)
-	// skip 2 frames so file:line points to the original caller in server/client.
 	_, file, line, ok := runtime.Caller(2)
 	if !ok {
 		file = "?"
@@ -98,8 +90,6 @@ func Infof(msg string, args ...any)  { logWithCaller("info", msg, args...) }
 func Warnf(msg string, args ...any)  { logWithCaller("warn", msg, args...) }
 func Errorf(msg string, args ...any) { logWithCaller("error", msg, args...) }
 
-// ===== Shared RPC payloads =====
-
 type Line struct {
 	Index int
 	Text  string
@@ -111,18 +101,18 @@ type ProcessArgs struct {
 	StartDir  string
 	Command   string
 	Args      []string
-	Env       []string // KEY=VAL pairs from client overlay
+	Env       []string
 }
 
 type ProcessReply struct {
 	ReturnCode       int
 	Error            string
 	Stopped          bool
-	StoppedBy        string // "", "client", "server"
+	StoppedBy        string
 	ExecStartRFC3339 string
 	ExecEndRFC3339   string
 	ElapsedMillis    int64
-	ResolvedCmdLine  string // e.g. "/abs/path arg1 arg2"
+	ResolvedCmdLine  string
 }
 
 type CancelArgs struct {
@@ -133,7 +123,6 @@ type CancelReply struct {
 	OK bool
 }
 
-// Stdin pull-RPC types
 type StdinReadArgs struct{ Max int }
 type StdinReadReply struct {
 	Data []byte
@@ -141,11 +130,19 @@ type StdinReadReply struct {
 	Err  string
 }
 
-// ===== ProcessReply helpers (error population) =====
+// Admin RPC payloads
+type AdminArgs struct {
+	MachineID string
+	PID       int
+	Command   string
+	Args      []string
+}
+type AdminReply struct {
+	ReturnCode int
+	Error      string
+}
 
-// FailAt sets an error reply using a provided start time (UTC recommended).
-// It mirrors the common early-error shape used by the server: start=end, zero elapsed,
-// return code rc, message msg, and clears ResolvedCmdLine.
+// ProcessReply helpers
 func (r *ProcessReply) FailAt(rc int, msg string, start time.Time) {
 	r.ReturnCode = rc
 	r.Error = msg
@@ -155,14 +152,10 @@ func (r *ProcessReply) FailAt(rc int, msg string, start time.Time) {
 	r.ElapsedMillis = 0
 	r.ResolvedCmdLine = ""
 }
-
-// FailNow is a convenience for FailAt with start = time.Now().
 func (r *ProcessReply) FailNow(rc int, msg string) {
 	now := time.Now().UTC()
 	r.FailAt(rc, msg, now)
 }
-
-// FailErrAt/FailErrNow are conveniences that accept error values.
 func (r *ProcessReply) FailErrAt(rc int, err error, start time.Time) {
 	if err == nil {
 		r.FailAt(rc, "", start)
@@ -174,8 +167,6 @@ func (r *ProcessReply) FailErrNow(rc int, err error) {
 	now := time.Now().UTC()
 	r.FailErrAt(rc, err, now)
 }
-
-// ===== Identity & paths =====
 
 func SanitizeMachineID(s string) (string, error) {
 	s = strings.TrimSpace(s)
@@ -208,7 +199,6 @@ func LoadMachineID(override string) string {
 			return id
 		}
 	}
-	// fallback random
 	var b [16]byte
 	_, _ = rand.Read(b[:])
 	id := hex.EncodeToString(b[:])
