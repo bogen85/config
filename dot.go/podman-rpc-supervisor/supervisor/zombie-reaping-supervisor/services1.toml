@@ -1,0 +1,21 @@
+# services.toml
+[supervisor]
+grace = "3s"        # default shutdown grace applied when a service lacks its own
+subreaper = true    # enable PR_SET_CHILD_SUBREAPER (useful when tini is PID 1)
+drain_tick = "1s"   # reaper drain cadence in addition to SIGCHLD
+
+[services.jsonrpc]
+path = "../main"
+args = ["-root", "/tmp/jrpc", "-mode", "server", "-name", "daemon"]
+restart = true
+dir = "."
+grace = "30s"
+stop_order = 20
+
+[services.telnetd]
+path = "busybox"
+args = ["telnetd", "-f", "/dev/null", "-F", "-l", "./bash-login", "-b", "127.0.0.1", "-p", "2323"]
+restart = true
+dir = "."
+grace = "2s"
+stop_order = 10
