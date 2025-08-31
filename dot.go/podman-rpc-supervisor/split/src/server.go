@@ -30,6 +30,7 @@ var (
 	flagName     string
 	flagStartDir string
 	flagEnvs     envList
+	flagConfig   string
 )
 
 type envList []string
@@ -44,10 +45,11 @@ func (e *envList) Set(s string) error {
 }
 
 func init() {
-	flag.StringVar(&flagRoot, "root", "", "socket root path (REQUIRED)")
-	flag.StringVar(&flagName, "name", "", "server socket name (listens on <root>/<name>.sock) (REQUIRED)")
+	flag.StringVar(&flagRoot, "root", "", "socket root path (REQUIRED if not provided in config.common.root)")
+	flag.StringVar(&flagName, "name", "", "server socket name (listens on <root>/<name>.sock) (REQUIRED if not provided in config.common.name)")
 	flag.StringVar(&flagStartDir, "startdir", "", "server: chdir on startup")
 	flag.Var(&flagEnvs, "env", "repeatable env (KEY=VAL or KEY) for server base environment (repeat)")
+	flag.StringVar(&flagConfig, "config", "", "path to JSON config (optional; default ./config.json). If provided and missing, it's an error.")
 }
 
 /* ===========================
@@ -110,7 +112,7 @@ type ServerService struct {
 	sessions      *sessionTable
 	wg            sync.WaitGroup
 	root          string
-	serverBaseEnv []string // KEY=VAL, built at startup per --env
+	serverBaseEnv []string // KEY=VAL, built at startup per --env and config
 }
 
 func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessReply) error {
@@ -618,11 +620,39 @@ func exitCodeFromWaitErr(err error) int {
 func main() {
 	// Flags
 	flag.Parse()
-	if flagRoot == "" || flagName == "" {
-		fmt.Fprintf(os.Stderr, "usage: %s -root <path> -name <name> [-startdir DIR] [--env ...]\n", filepath.Base(os.Args[0]))
+
+	// Load config (default if not specified)
+	cfgPath := csjrpc.DefaultConfigPath
+	if flagConfig != "" {
+		cfgPath = flagConfig
+	}
+	cfg, found, err := csjrpc.LoadConfig(cfgPath)
+	if err != nil {
+		// If user explicitly provided --config and it's broken/missing, hard error.
+		if flagConfig != "" {
+			csjrpc.Errorf("load config %q: %v", cfgPath, err)
+			os.Exit(2)
+		}
+		// otherwise continue without config
+		found = false
+	}
+	if flagConfig != "" && !found {
+		csjrpc.Errorf("config file not found: %s", cfgPath)
 		os.Exit(2)
 	}
-	absRoot, err := filepath.Abs(flagRoot)
+
+	// Effective values: config -> flags (flags override)
+	root := cfg.Common.Root
+	name := cfg.Common.Name
+	if flagRoot != "" { root = flagRoot }
+	if flagName != "" { name = flagName }
+
+	if root == "" || name == "" {
+		fmt.Fprintf(os.Stderr, "usage: %s -root <path> -name <name> [-startdir DIR] [--env ...] [-config PATH]\n", filepath.Base(os.Args[0]))
+		os.Exit(2)
+	}
+
+	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		csjrpc.Errorf("invalid root: %v", err)
 		os.Exit(2)
@@ -632,8 +662,8 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Build server base env from flags
-	serverBase := make([]string, 0, len(flagEnvs))
+	// Server base env: from config then flags (flags override)
+	serverBase := csjrpc.EnvMapToList(cfg.Server.Env)
 	for _, e := range flagEnvs {
 		if strings.Contains(e, "=") {
 			serverBase = append(serverBase, e)
@@ -646,6 +676,7 @@ func main() {
 		}
 		serverBase = append(serverBase, e+"="+val)
 	}
+
 	// Ensure root exists (do not clear it)
 	if fi, err := os.Stat(absRoot); err != nil {
 		if os.IsNotExist(err) {
@@ -665,10 +696,14 @@ func main() {
 		csjrpc.Infof("server root: %s", absRoot)
 	}
 
-	// Optional chdir at startup
+	// Optional chdir at startup (config then flag override)
+	startDir := cfg.Server.StartDir
 	if flagStartDir != "" {
-		if err := os.Chdir(flagStartDir); err != nil {
-			csjrpc.Errorf("server chdir %q: %v", flagStartDir, err)
+		startDir = flagStartDir
+	}
+	if startDir != "" {
+		if err := os.Chdir(startDir); err != nil {
+			csjrpc.Errorf("server chdir %q: %v", startDir, err)
 			os.Exit(2)
 		}
 		cwd, _ := os.Getwd()
@@ -676,7 +711,7 @@ func main() {
 	}
 
 	// Main RPC socket (fail if already exists)
-	mainSock := filepath.Join(absRoot, flagName+".sock")
+	mainSock := filepath.Join(absRoot, name+".sock")
 	if _, err := os.Lstat(mainSock); err == nil {
 		csjrpc.Errorf("refusing to overwrite existing socket: %s", mainSock)
 		os.Exit(2)
