@@ -130,11 +130,7 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 			workDir = filepath.Join(wd, workDir)
 		}
 		if fi, err := os.Stat(workDir); err != nil || !fi.IsDir() {
-			reply.ReturnCode = 2
-			reply.Error = fmt.Sprintf("invalid startdir: %q", args.StartDir)
-			reply.ExecStartRFC3339 = time.Now().UTC().Format(time.RFC3339Nano)
-			reply.ExecEndRFC3339 = reply.ExecStartRFC3339
-			reply.ElapsedMillis = 0
+			reply.FailNow(2, fmt.Sprintf("invalid startdir: %q", args.StartDir))
 			csjrpc.Errorf("key=%s startdir invalid: %v", key, args.StartDir)
 			return nil
 		}
@@ -153,29 +149,17 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 
 	// Wait for client sockets to appear (up to a few seconds)
 	if err := waitForSocket(stdoutSock, 5*time.Second); err != nil {
-		reply.ReturnCode = 2
-		reply.Error = "stdout socket not available: " + err.Error()
-		reply.ExecStartRFC3339 = time.Now().UTC().Format(time.RFC3339Nano)
-		reply.ExecEndRFC3339 = reply.ExecStartRFC3339
-		reply.ElapsedMillis = 0
+		reply.FailNow(2, "stdout socket not available: "+err.Error())
 		csjrpc.Errorf("key=%s stdout socket error: %v", key, err)
 		return nil
 	}
 	if err := waitForSocket(stderrSock, 5*time.Second); err != nil {
-		reply.ReturnCode = 2
-		reply.Error = "stderr socket not available: " + err.Error()
-		reply.ExecStartRFC3339 = time.Now().UTC().Format(time.RFC3339Nano)
-		reply.ExecEndRFC3339 = reply.ExecStartRFC3339
-		reply.ElapsedMillis = 0
+		reply.FailNow(2, "stderr socket not available: "+err.Error())
 		csjrpc.Errorf("key=%s stderr socket error: %v", key, err)
 		return nil
 	}
 	if err := waitForSocket(stdinSock, 5*time.Second); err != nil {
-		reply.ReturnCode = 2
-		reply.Error = "stdin socket not available: " + err.Error()
-		reply.ExecStartRFC3339 = time.Now().UTC().Format(time.RFC3339Nano)
-		reply.ExecEndRFC3339 = reply.ExecStartRFC3339
-		reply.ElapsedMillis = 0
+		reply.FailNow(2, "stdin socket not available: "+err.Error())
 		csjrpc.Errorf("key=%s stdin socket error: %v", key, err)
 		return nil
 	}
@@ -183,11 +167,7 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 	// Connect to client services
 	stdoutConn, err := net.Dial("unix", stdoutSock)
 	if err != nil {
-		reply.ReturnCode = 2
-		reply.Error = "connect stdout service: " + err.Error()
-		reply.ExecStartRFC3339 = time.Now().UTC().Format(time.RFC3339Nano)
-		reply.ExecEndRFC3339 = reply.ExecStartRFC3339
-		reply.ElapsedMillis = 0
+		reply.FailNow(2, "connect stdout service: "+err.Error())
 		csjrpc.Errorf("key=%s stdout dial: %v", key, err)
 		return nil
 	}
@@ -196,11 +176,7 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 
 	stderrConn, err := net.Dial("unix", stderrSock)
 	if err != nil {
-		reply.ReturnCode = 2
-		reply.Error = "connect stderr service: " + err.Error()
-		reply.ExecStartRFC3339 = time.Now().UTC().Format(time.RFC3339Nano)
-		reply.ExecEndRFC3339 = reply.ExecStartRFC3339
-		reply.ElapsedMillis = 0
+		reply.FailNow(2, "connect stderr service: "+err.Error())
 		csjrpc.Errorf("key=%s stderr dial: %v", key, err)
 		return nil
 	}
@@ -209,11 +185,7 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 
 	stdinConn, err := net.Dial("unix", stdinSock)
 	if err != nil {
-		reply.ReturnCode = 2
-		reply.Error = "connect stdin service: " + err.Error()
-		reply.ExecStartRFC3339 = time.Now().UTC().Format(time.RFC3339Nano)
-		reply.ExecEndRFC3339 = reply.ExecStartRFC3339
-		reply.ElapsedMillis = 0
+		reply.FailNow(2, "connect stdin service: "+err.Error())
 		csjrpc.Errorf("key=%s stdin dial: %v", key, err)
 		return nil
 	}
@@ -239,12 +211,7 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 	// Resolve command path
 	resolvedPath, rc, err := resolveCommandPath(args.Command, workDirOrCwd(workDir), finalEnv)
 	if err != nil {
-		reply.ReturnCode = rc
-		reply.Error = err.Error()
-		reply.ExecStartRFC3339 = time.Now().UTC().Format(time.RFC3339Nano)
-		reply.ExecEndRFC3339 = reply.ExecStartRFC3339
-		reply.ElapsedMillis = 0
-		reply.ResolvedCmdLine = ""
+		reply.FailNow(rc, err.Error())
 		csjrpc.Errorf("key=%s resolve command %q failed: %v", key, args.Command, err)
 		return nil
 	}
@@ -260,31 +227,19 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		reply.ReturnCode = 2
-		reply.Error = "stdout pipe: " + err.Error()
-		reply.ExecStartRFC3339 = time.Now().UTC().Format(time.RFC3339Nano)
-		reply.ExecEndRFC3339 = reply.ExecStartRFC3339
-		reply.ElapsedMillis = 0
+		reply.FailNow(2, "stdout pipe: "+err.Error())
 		return nil
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
-		reply.ReturnCode = 2
-		reply.Error = "stderr pipe: " + err.Error()
-		reply.ExecStartRFC3339 = time.Now().UTC().Format(time.RFC3339Nano)
-		reply.ExecEndRFC3339 = reply.ExecStartRFC3339
-		reply.ElapsedMillis = 0
+		reply.FailNow(2, "stderr pipe: "+err.Error())
 		return nil
 	}
 
 	// We'll provide stdin via a pipe and pull from client's stdin service
 	stdinWriter, err := cmd.StdinPipe()
 	if err != nil {
-		reply.ReturnCode = 2
-		reply.Error = "stdin pipe: " + err.Error()
-		reply.ExecStartRFC3339 = time.Now().UTC().Format(time.RFC3339Nano)
-		reply.ExecEndRFC3339 = reply.ExecStartRFC3339
-		reply.ElapsedMillis = 0
+		reply.FailNow(2, "stdin pipe: "+err.Error())
 		return nil
 	}
 
@@ -292,11 +247,7 @@ func (s *ServerService) Process(args csjrpc.ProcessArgs, reply *csjrpc.ProcessRe
 	execStart := time.Now().UTC()
 
 	if err := cmd.Start(); err != nil {
-		reply.ReturnCode = 127
-		reply.Error = "exec start: " + err.Error()
-		reply.ExecStartRFC3339 = execStart.Format(time.RFC3339Nano)
-		reply.ExecEndRFC3339 = time.Now().UTC().Format(time.RFC3339Nano)
-		reply.ElapsedMillis = 0
+		reply.FailAt(127, "exec start: "+err.Error(), execStart)
 		return nil
 	}
 	reply.ResolvedCmdLine = strings.Join(append([]string{resolvedPath}, args.Args...), " ")
@@ -636,6 +587,7 @@ func main() {
 		// otherwise continue without config
 		found = false
 	}
+	// Hard-stop if --config was provided but not found
 	if flagConfig != "" && !found {
 		csjrpc.Errorf("config file not found: %s", cfgPath)
 		os.Exit(2)

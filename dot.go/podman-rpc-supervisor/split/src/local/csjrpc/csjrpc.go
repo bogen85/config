@@ -141,6 +141,40 @@ type StdinReadReply struct {
 	Err  string
 }
 
+// ===== ProcessReply helpers (error population) =====
+
+// FailAt sets an error reply using a provided start time (UTC recommended).
+// It mirrors the common early-error shape used by the server: start=end, zero elapsed,
+// return code rc, message msg, and clears ResolvedCmdLine.
+func (r *ProcessReply) FailAt(rc int, msg string, start time.Time) {
+	r.ReturnCode = rc
+	r.Error = msg
+	startUTC := start.UTC()
+	r.ExecStartRFC3339 = startUTC.Format(time.RFC3339Nano)
+	r.ExecEndRFC3339 = startUTC.Format(time.RFC3339Nano)
+	r.ElapsedMillis = 0
+	r.ResolvedCmdLine = ""
+}
+
+// FailNow is a convenience for FailAt with start = time.Now().
+func (r *ProcessReply) FailNow(rc int, msg string) {
+	now := time.Now().UTC()
+	r.FailAt(rc, msg, now)
+}
+
+// FailErrAt/FailErrNow are conveniences that accept error values.
+func (r *ProcessReply) FailErrAt(rc int, err error, start time.Time) {
+	if err == nil {
+		r.FailAt(rc, "", start)
+		return
+	}
+	r.FailAt(rc, err.Error(), start)
+}
+func (r *ProcessReply) FailErrNow(rc int, err error) {
+	now := time.Now().UTC()
+	r.FailErrAt(rc, err, now)
+}
+
 // ===== Identity & paths =====
 
 func SanitizeMachineID(s string) (string, error) {
