@@ -1,0 +1,1 @@
+pstv() { local i; for i in $(python3 -c 'import psutil; print(*sorted(p.pid for p in psutil.process_iter(["ppid"]) if p.info["ppid"]==0))'); do pstree -Thapl "$i"; done; }
