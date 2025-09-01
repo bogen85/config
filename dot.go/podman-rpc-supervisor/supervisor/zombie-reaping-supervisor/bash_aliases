@@ -3,11 +3,9 @@ pstv() {
 	local rp=$(
 		python <<-end
 			import psutil as ps
-			print(
-				*sorted(
-					p.pid for p in ps.process_iter(["ppid"]) if p.info["ppid"]==0
-				)
-			)
+			print(*sorted(
+				p.pid for p in ps.process_iter(["ppid"]) if p.info["ppid"]==0
+			))
 		end
 	)
 
