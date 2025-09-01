@@ -1549,6 +1549,37 @@ func ensureOwnerExec(path string, verbose bool) error {
 	return nil
 }
 
+// askConfirm prompts the user with a yes/no question.
+// If defaultYes is true, ENTER counts as "yes" and the prompt shows [Y/n].
+// Otherwise ENTER counts as "no" and the prompt shows [y/N].
+// Returns true for yes, false for no.
+func askConfirm(prompt string, defaultYes bool) bool {
+	suffix := " [y/N]: "
+	if defaultYes {
+		suffix = " [Y/n]: "
+	}
+	fmt.Print(prompt, suffix)
+
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		// conservative: treat I/O error as "no"
+		return false
+	}
+	resp := strings.ToLower(strings.TrimSpace(line))
+	switch resp {
+	case "y", "yes":
+		return true
+	case "n", "no":
+		return false
+	case "":
+		return defaultYes
+	default:
+		// keep it simple: anything else = no
+		return false
+	}
+}
+
 func cmdApply(y bool, script string, verbose bool) int {
 	if script == "" {
 		fatalf("apply: script.go required")
@@ -1558,22 +1589,21 @@ func cmdApply(y bool, script string, verbose bool) int {
 		fatalf("apply: %v", err)
 	}
 
-	// Shebang normalize (with optional prompt)
+	// Shebang normalize (prompt unless -y)
 	sb, err := parseShebang(abs)
 	if err != nil {
 		fatalf("apply: %v", err)
 	}
 	want := desiredShebangEnvOrAbsForApply(sb)
-	needChange := !sb.hasShebang || sb.line != want
-	if needChange {
-		if !y {
-			fmt.Printf("Add/normalize shebang to %s? [y/N]: ", abs)
-			var resp string
-			fmt.Scanln(&resp)
-			if strings.ToLower(strings.TrimSpace(resp)) != "y" {
-				fmt.Println("apply: skipped")
-				return 0
+	needShebang := !sb.hasShebang || sb.line != want
+	if needShebang {
+		allowed := y || askConfirm(fmt.Sprintf("Add/normalize shebang on %s?", abs) /*defaultYes=*/, false)
+		if !allowed {
+			if verbose {
+				fmt.Println("apply: shebang unchanged (user declined)")
 			}
+			fmt.Println("apply: skipped")
+			return 0
 		}
 		changed, err := writeShebangLinePreserveMode(abs, want)
 		if err != nil {
@@ -1581,18 +1611,30 @@ func cmdApply(y bool, script string, verbose bool) int {
 		}
 		if verbose {
 			if changed {
-				fmt.Printf("apply: shebang updated\n")
+				fmt.Println("apply: shebang updated")
 			} else {
-				fmt.Printf("apply: shebang already correct\n")
+				fmt.Println("apply: shebang already correct")
 			}
 		}
 	} else if verbose {
-		fmt.Printf("apply: shebang already correct\n")
+		fmt.Println("apply: shebang already correct")
 	}
 
-	// Always ensure owner-executable (single place for chmod logic)
-	if err := ensureOwnerExec(abs, verbose); err != nil {
-		fatalf("apply: chmod: %v", err)
+	// Ensure owner-executable if missing (prompt unless -y)
+	info, err := os.Stat(abs)
+	if err != nil {
+		fatalf("apply: %v", err)
+	}
+	needsExec := info.Mode().Perm()&0o100 == 0
+	if needsExec {
+		allowed := y || askConfirm(fmt.Sprintf("Add owner-exec bit (chmod u+x) on %s?", abs) /*defaultYes=*/, false)
+		if allowed {
+			if err := ensureOwnerExec(abs, verbose); err != nil {
+				fatalf("apply: chmod: %v", err)
+			}
+		} else if verbose {
+			fmt.Println("apply: not executable (user declined chmod)")
+		}
 	}
 
 	// Load configs (strict), merge, refresh cache (no run)
