@@ -1,6 +1,14 @@
 pstv() {
-	local i
-	for i in $(python3 -c 'import psutil; print(*sorted(p.pid for p in psutil.process_iter(["ppid"]) if p.info["ppid"]==0))'); do
-		pstree -SThanlp $i
+	local p
+	local rp=$(
+		python <<-end
+			import psutil
+			print(*sorted(p.pid for p in psutil.process_iter(["ppid"]) if p.info["ppid"]==0))
+		end
+	)
+
+	for p in $rp; do
+		echo "[$(cat /proc/$p/cgroup)]"
+		pstree -planThS $p
 	done
 }
