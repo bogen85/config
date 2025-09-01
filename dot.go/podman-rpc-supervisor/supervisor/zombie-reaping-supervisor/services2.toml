@@ -1,0 +1,25 @@
+# services.toml (with idle_exit_after and subreaper)
+[supervisor]
+grace           = "3s"    # default shutdown grace for services without their own
+subreaper       = true    # PR_SET_CHILD_SUBREAPER (useful even if tini is PID 1)
+drain_tick      = "1s"    # reaper drain cadence alongside SIGCHLD
+idle_exit_after = "0s"    # exit immediately when all restart=true services are down
+# Examples:
+# idle_exit_after = "30s"  # exit 30s after all daemons are down
+# idle_exit_after = -1     # disabled (never exit on idle)
+
+[services.jsonrpc]
+path = "../main"
+args = ["-root", "/tmp/jrpc", "-mode", "server", "-name", "daemon"]
+restart = true
+dir = "."
+grace = "30s"
+stop_order = 20
+
+[services.telnetd]
+path = "busybox"
+args = ["telnetd", "-f", "/dev/null", "-F", "-l", "./bash-login", "-b", "127.0.0.1", "-p", "2323"]
+restart = true
+dir = "."
+grace = "2s"
+stop_order = 10

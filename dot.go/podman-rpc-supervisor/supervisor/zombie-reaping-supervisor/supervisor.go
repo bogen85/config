@@ -1,9 +1,6 @@
-// supervisor.go (libc/cgo reaper with age logging, Linux-only)
-// Uses libc waitid(WEXITED|WNOWAIT|WNOHANG) to peek PID, reads /proc/<pid>/comm
-// and /proc/<pid>/stat (starttime) to compute age, then reaps with waitpid().
-// No x/sys dependency.
+// supervisor.go (libc/cgo reaper; robust drain + pretty logs + idle-exit + process-group shutdown)
 //
-// Build (requires CGO and BurntSushi/toml in GOPATH):
+// Build:
 //
 //	CGO_ENABLED=1 GO111MODULE=auto go build -trimpath -ldflags="-s -w" -o supervisor supervisor.go
 //
@@ -20,13 +17,13 @@ package main
 #include <errno.h>
 #include <unistd.h>
 
-// Prototypes so cgo can resolve these symbols.
+// Prototypes
 int waitid_peek(pid_t *out_pid);
 int waitpid_reap(pid_t pid, int *status);
 void decode_status(int st, int *out_code, int *out_signaled, int *out_sig);
 long clk_tck(void);
 
-// Definitions.
+// Definitions
 int waitid_peek(pid_t *out_pid) {
     siginfo_t si;
     int r = waitid(P_ALL, 0, &si, WEXITED | WNOHANG | WNOWAIT);
@@ -34,13 +31,11 @@ int waitid_peek(pid_t *out_pid) {
     *out_pid = si.si_pid; // 0 when nothing ready
     return 0;
 }
-
 int waitpid_reap(pid_t pid, int *status) {
     pid_t r = waitpid(pid, status, 0);
     if (r < 0) return -errno;
     return 0;
 }
-
 void decode_status(int st, int *out_code, int *out_signaled, int *out_sig) {
     if (WIFEXITED(st)) {
         *out_code = WEXITSTATUS(st);
@@ -59,7 +54,6 @@ void decode_status(int st, int *out_code, int *out_signaled, int *out_sig) {
     *out_signaled = 0;
     *out_sig = 0;
 }
-
 long clk_tck(void) { return sysconf(_SC_CLK_TCK); }
 */
 import "C"
@@ -89,9 +83,13 @@ import (
    Config (TOML)
    =========================== */
 
-type Dur struct{ time.Duration }
+type Dur struct {
+	time.Duration
+	set bool
+}
 
 func (d *Dur) UnmarshalTOML(v interface{}) error {
+	d.set = true
 	if v == nil {
 		d.Duration = 0
 		return nil
@@ -109,10 +107,10 @@ func (d *Dur) UnmarshalTOML(v interface{}) error {
 		d.Duration = dd
 		return nil
 	case int64:
-		d.Duration = time.Duration(x)
+		d.Duration = time.Duration(x) * time.Second
 		return nil
 	case float64:
-		d.Duration = time.Duration(x)
+		d.Duration = time.Duration(int64(x)) * time.Second
 		return nil
 	default:
 		return fmt.Errorf("unsupported duration type %T", v)
@@ -129,9 +127,10 @@ type ServiceCfg struct {
 }
 
 type SupervisorCfg struct {
-	Grace     Dur  `toml:"grace"`
-	Subreaper bool `toml:"subreaper"`
-	DrainTick Dur  `toml:"drain_tick"`
+	Grace         Dur  `toml:"grace"`
+	Subreaper     bool `toml:"subreaper"`
+	DrainTick     Dur  `toml:"drain_tick"`
+	IdleExitAfter Dur  `toml:"idle_exit_after"`
 }
 
 type RootCfg struct {
@@ -140,7 +139,7 @@ type RootCfg struct {
 }
 
 /* ===========================
-   Logging
+   Logging helpers
    =========================== */
 
 func logf(level, svc, msg string, a ...any) {
@@ -160,23 +159,39 @@ func info(svc, m string, a ...any)   { logf("info", svc, m, a...) }
 func warn(svc, m string, a ...any)   { logf("warn", svc, m, a...) }
 func errorf(svc, m string, a ...any) { logf("error", svc, m, a...) }
 
+func quoteArgs(args []string) string {
+	if len(args) == 0 {
+		return "[]"
+	}
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, s := range args {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(fmt.Sprintf("%q", s))
+	}
+	b.WriteByte(']')
+	return b.String()
+}
+
 /* ===========================
-   Registry for centralized reaping
+   Centralized reaping registry
    =========================== */
 
 type exitMsg struct {
 	pid    int
-	code   int            // normalized: exit status or 128+signal
+	code   int            // normalized exit status (exited) or 128+signal
 	cause  string         // "exited" or "signaled"
 	signal syscall.Signal // signal for signaled exits
-	comm   string         // short name from /proc/<pid>/comm (best-effort)
-	age    time.Duration  // best-effort since process start
+	comm   string         // /proc/<pid>/comm
+	age    time.Duration  // lifetime since start
 }
 
 var (
 	repMu     sync.Mutex
 	reg       = make(map[int]*runner) // pid -> runner
-	preReaped = make(map[int]exitMsg) // pid -> exit (handles rare race: exit-before-register)
+	preReaped = make(map[int]exitMsg) // pid -> exit (race: exit before register)
 )
 
 func registerPid(pid int, r *runner) (pre *exitMsg) {
@@ -189,7 +204,6 @@ func registerPid(pid int, r *runner) (pre *exitMsg) {
 	reg[pid] = r
 	return nil
 }
-
 func deliverOrStash(pid int, msg exitMsg) (delivered bool) {
 	repMu.Lock()
 	r := reg[pid]
@@ -204,15 +218,10 @@ func deliverOrStash(pid int, msg exitMsg) (delivered bool) {
 		}
 		return true
 	}
-	// Not one of ours (or race before registration) -> stash & log
 	repMu.Lock()
 	preReaped[pid] = msg
 	repMu.Unlock()
-	if msg.comm != "" {
-		warn("orphan", "reaped pid=%d comm=%q cause=%s rc=%d sig=%d age=%s", pid, msg.comm, msg.cause, msg.code, msg.signal, msg.age)
-	} else {
-		warn("orphan", "reaped pid=%d cause=%s rc=%d sig=%d age=%s", pid, msg.cause, msg.code, msg.signal, msg.age)
-	}
+	warn("orphan", "reaped pid=%d comm=%q cause=%s rc=%d sig=%d age=%s", pid, msg.comm, msg.cause, msg.code, msg.signal, msg.age)
 	return false
 }
 
@@ -233,9 +242,7 @@ func lookPathOrAbs(path string) (string, error) {
 	}
 	return p, nil
 }
-
-func signalGroup(pid int, sig syscall.Signal) error { return syscall.Kill(-pid, sig) }
-
+func signalGroup(pgid int, sig syscall.Signal) error { return syscall.Kill(-pgid, sig) }
 func readProcComm(pid int) string {
 	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
 	if err != nil {
@@ -244,7 +251,7 @@ func readProcComm(pid int) string {
 	return strings.TrimSpace(string(b))
 }
 
-// ---- Age computation (from /proc/stat btime + /proc/<pid>/stat starttime) ----
+// Age from /proc/stat btime + /proc/<pid>/stat starttime (field 22)
 var (
 	bootOnce    sync.Once
 	bootUnixSec int64
@@ -254,7 +261,7 @@ var (
 func initBoot() {
 	clkTck = int64(C.clk_tck())
 	if clkTck <= 0 {
-		clkTck = 100 // conservative fallback
+		clkTck = 100
 	}
 	data, err := os.ReadFile("/proc/stat")
 	if err == nil {
@@ -270,16 +277,14 @@ func initBoot() {
 			}
 		}
 	}
-	bootUnixSec = time.Now().Unix() // fallback if /proc/stat not readable
+	bootUnixSec = time.Now().Unix()
 }
-
 func procAge(pid int) time.Duration {
 	bootOnce.Do(initBoot)
 	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
 		return 0
 	}
-	// comm can contain spaces in parentheses; find last ')' then split rest.
 	s := string(b)
 	close := strings.LastIndexByte(s, ')')
 	if close == -1 || close+2 >= len(s) {
@@ -289,7 +294,6 @@ func procAge(pid int) time.Duration {
 	if len(rest) < 20 {
 		return 0
 	}
-	// Field 22 (index 21 overall) is starttime; in 'rest' it's at index 19.
 	startTicks, err := strconv.ParseInt(rest[19], 10, 64)
 	if err != nil || startTicks <= 0 || clkTck <= 0 {
 		return 0
@@ -303,36 +307,52 @@ func procAge(pid int) time.Duration {
 }
 
 /* ===========================
-   Global reaper (libc peek-before-reap)
+   Robust global reaper (libc)
    =========================== */
 
 func reaper(ctx context.Context, sigchld <-chan os.Signal, drainTick time.Duration) {
 	if drainTick <= 0 {
 		drainTick = time.Second
 	}
-	ticker := time.NewTicker(drainTick)
-	defer ticker.Stop()
+	ticker := new(time.Ticker)
+	if drainTick > 0 {
+		ticker = time.NewTicker(drainTick)
+		defer ticker.Stop()
+	}
 
 	drain := func() {
 		for {
 			var cpid C.pid_t
 			if rc := C.waitid_peek(&cpid); rc < 0 {
-				// No children or error; stop draining
+				errno := syscall.Errno(-rc)
+				if errno == syscall.EINTR {
+					continue
+				} // retry
+				if errno == syscall.ECHILD {
+					break
+				} // nothing to reap
+				warn("reaper", "waitid_peek error: errno=%d", int(errno))
 				break
 			}
 			pid := int(cpid)
-			if pid == 0 { // nothing ready
+			if pid == 0 {
 				break
-			}
+			} // nothing ready
 
-			// Peek time: read /proc for comm and age
 			comm := readProcComm(pid)
 			age := procAge(pid)
 
-			// Now reap the specific pid
 			var st C.int
 			if rc := C.waitpid_reap(C.pid_t(pid), &st); rc < 0 {
-				_ = deliverOrStash(pid, exitMsg{pid: pid, code: 1, cause: "unknown", signal: 0, comm: comm, age: age})
+				errno := syscall.Errno(-rc)
+				if errno == syscall.EINTR {
+					continue
+				} // try again next cycle
+				if errno == syscall.ECHILD || errno == syscall.ESRCH {
+					info("reaper", "waitpid nochild pid=%d errno=%d", pid, int(errno))
+					continue
+				}
+				warn("reaper", "waitpid error pid=%d errno=%d", pid, int(errno))
 				continue
 			}
 			var code, signaled, sig C.int
@@ -369,7 +389,7 @@ type runner struct {
 	name string
 	cfg  ServiceCfg
 
-	pid    atomic.Int32 // leader pid (pgid)
+	pgid   atomic.Int32 // process group id (leader pid at spawn)
 	exitCh chan exitMsg
 
 	lastExit int // for oneshot aggregation
@@ -406,9 +426,7 @@ func (r *runner) startLoop(ctx context.Context, defaultGrace time.Duration, wgDo
 		if r.cfg.Dir != "" {
 			cmd.Dir = r.cfg.Dir
 		}
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Stdin = nil
+		cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, nil
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 		startAt := time.Now()
@@ -424,13 +442,19 @@ func (r *runner) startLoop(ctx context.Context, defaultGrace time.Duration, wgDo
 			continue
 		}
 
-		pid := cmd.Process.Pid
-		_ = cmd.Process.Release() // no Wait(); reaper owns waits
-		r.pid.Store(int32(pid))
+		leader := cmd.Process.Pid
+		_ = cmd.Process.Release() // reaper does the wait
 
-		// Register pid -> runner; handle rare pre-reap race
-		if pre := registerPid(pid, r); pre != nil {
-			info(r.name, "(race) pid=%d exited early rc=%d", pid, pre.code)
+		// With Setpgid:true, the leader's pgid == leader pid on spawn.
+		// Try to read actual pgid just in case; fallback to leader pid.
+		pgid, err := syscall.Getpgid(leader)
+		if err != nil || pgid <= 0 {
+			pgid = leader
+		}
+		r.pgid.Store(int32(pgid))
+
+		if pre := registerPid(leader, r); pre != nil {
+			info(r.name, "(race) pid=%d exited early rc=%d", leader, pre.code)
 			r.lastExit = pre.code
 			if !r.cfg.Restart || ctx.Err() != nil {
 				return
@@ -446,9 +470,8 @@ func (r *runner) startLoop(ctx context.Context, defaultGrace time.Duration, wgDo
 			continue
 		}
 
-		info(r.name, "started pid=%d path=%q args=%q dir=%q", pid, path, strings.Join(r.cfg.Args, " "), r.cfg.Dir)
+		info(r.name, "started pid=%d pgid=%d path=%q args=%s dir=%q", leader, pgid, path, quoteArgs(r.cfg.Args), r.cfg.Dir)
 
-		// Wait for exit notification from reaper or shutdown
 		select {
 		case msg := <-r.exitCh:
 			r.lastExit = msg.code
@@ -470,30 +493,38 @@ func (r *runner) startLoop(ctx context.Context, defaultGrace time.Duration, wgDo
 	}
 }
 
-func (r *runner) pgid() int { return int(r.pid.Load()) }
+func (r *runner) groupID() int {
+	return int(r.pgid.Load())
+}
 
-func (r *runner) alive() bool {
-	pid := r.pgid()
-	if pid <= 0 {
+func (r *runner) groupAlive() bool {
+	pgid := r.groupID()
+	if pgid <= 0 {
 		return false
 	}
-	if err := syscall.Kill(pid, 0); err != nil {
+	// Probe the group; EPERM => still alive but not signalable.
+	if err := syscall.Kill(-pgid, 0); err != nil {
+		if err == syscall.EPERM {
+			return true
+		}
 		return false
 	}
 	return true
 }
 
 func (r *runner) stop(grace time.Duration, escalateNow func() bool) {
-	pid := r.pgid()
-	if pid <= 0 {
+	pgid := r.groupID()
+	if pgid <= 0 {
 		return
 	}
-	warn(r.name, "shutdown: sending SIGTERM to pgid=%d", pid)
-	_ = signalGroup(pid, syscall.SIGTERM)
+
+	warn(r.name, "shutdown: sending SIGTERM to pgid=%d", pgid)
+	_ = signalGroup(pgid, syscall.SIGTERM)
+
 	deadline := time.Now().Add(grace)
 	for time.Now().Before(deadline) {
-		if !r.alive() {
-			info(r.name, "shutdown: process exited after SIGTERM")
+		if !r.groupAlive() {
+			info(r.name, "shutdown: group exited after SIGTERM")
 			return
 		}
 		if escalateNow != nil && escalateNow() {
@@ -501,9 +532,10 @@ func (r *runner) stop(grace time.Duration, escalateNow func() bool) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if r.alive() {
-		warn(r.name, "shutdown: grace %s elapsed; sending SIGKILL to pgid=%d", grace, pid)
-		_ = signalGroup(pid, syscall.SIGKILL)
+
+	if r.groupAlive() {
+		warn(r.name, "shutdown: grace %s elapsed; sending SIGKILL to pgid=%d", grace, pgid)
+		_ = signalGroup(pgid, syscall.SIGKILL)
 	}
 }
 
@@ -529,7 +561,7 @@ func sleepBackoff(ctx context.Context, backoff *time.Duration) bool {
 }
 
 /* ===========================
-   Main
+   Main + idle-exit watcher
    =========================== */
 
 const PR_SET_CHILD_SUBREAPER = 36
@@ -540,6 +572,19 @@ func setSubreaper() error {
 		return e
 	}
 	return nil
+}
+
+func allDaemonsDown(runners []*runner) bool {
+	anyDaemon := false
+	for _, r := range runners {
+		if r.cfg.Restart {
+			anyDaemon = true
+			if r.groupAlive() {
+				return false
+			}
+		}
+	}
+	return anyDaemon // true only if there was at least one daemon and none alive
 }
 
 func main() {
@@ -571,7 +616,7 @@ func main() {
 		}
 	}
 
-	// Reaper drain ticker interval
+	// Ticker cadence
 	drainTick := time.Second
 	if root.Supervisor.DrainTick.Duration > 0 {
 		drainTick = root.Supervisor.DrainTick.Duration
@@ -596,32 +641,77 @@ func main() {
 		runners = append(runners, r)
 	}
 
-	// Contexts
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	// Signals (stop) & SIGCHLD
 	sigTerm := make(chan os.Signal, 2)
 	signal.Notify(sigTerm, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	var sigCount int32
-
 	sigChld := make(chan os.Signal, 1)
 	signal.Notify(sigChld, syscall.SIGCHLD)
 	go reaper(ctx, sigChld, drainTick)
 
-	// Start runners
+	// Start services
 	var wgAll sync.WaitGroup
 	wgAll.Add(len(runners))
 	for _, r := range runners {
 		go r.startLoop(ctx, defaultGrace, wgAll.Done)
 	}
 
-	// Order for shutdown
+	// Idle-exit watcher (only if at least one daemon and setting is present)
+	idleCh := make(chan struct{}, 1)
+	idleEnabled := false
+	if hasDaemons && root.Supervisor.IdleExitAfter.set {
+		idleEnabled = true
+		idleAfter := root.Supervisor.IdleExitAfter.Duration // 0s => immediate when all daemons down
+		go func() {
+			tick := time.NewTicker(drainTick)
+			defer tick.Stop()
+			var timer *time.Timer
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-tick.C:
+					if allDaemonsDown(runners) {
+						if idleAfter == 0 {
+							select {
+							case idleCh <- struct{}{}:
+							default:
+							}
+							return
+						}
+						if timer == nil {
+							info("", "idle: all daemons down; exiting in %s (idle_exit_after)", idleAfter)
+							timer = time.NewTimer(idleAfter)
+							go func() {
+								<-timer.C
+								select {
+								case idleCh <- struct{}{}:
+								default:
+								}
+							}()
+						}
+					} else {
+						if timer != nil {
+							if !timer.Stop() {
+								select {
+								case <-timer.C:
+								default:
+								}
+							}
+							timer = nil
+						}
+					}
+				}
+			}
+		}()
+	}
+
+	// Shutdown ordering
 	sorted := append([]*runner(nil), runners...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].cfg.StopOrder < sorted[j].cfg.StopOrder })
 
 	if !hasDaemons {
-		// oneshot-only: wait for all to exit
 		wgAll.Wait()
 		exitStatus := 0
 		for _, r := range runners {
@@ -634,8 +724,14 @@ func main() {
 	}
 
 	info("", "daemon mode: waiting for signal")
-	<-sigTerm
-	warn("", "received stop signal; initiating shutdown")
+	select {
+	case <-sigTerm:
+		warn("", "received stop signal; initiating shutdown")
+	case <-idleCh:
+		if idleEnabled {
+			warn("", "idle timeout reached; shutting down")
+		}
+	}
 	atomic.AddInt32(&sigCount, 1)
 	cancel() // prevent restarts
 
