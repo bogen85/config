@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,59 +22,13 @@ import (
 /*
 Build:
   go build -o /opt/x.org/bin/goscripter
-
-Defaults:
-  • Cache: $XDG_CACHE_HOME/goscripter or ~/.cache/goscripter
-           layout (home style): ~/.cache/goscripter/<abs/path/to/script.go>/
-  • If overridden via [cache].root, layout becomes:
-           /<root>/goscripter/$USER/<abs/path/to/script.go>/
-
-Global config search order (later overrides earlier):
-  1) /etc/goscripter.toml
-  2) /usr/local/etc/goscripter.toml
-  3) ./goscripter.toml
-  4) ~/.config/goscripter/config.toml
-
-Local (per-script):
-  <script.go>.toml   # highest precedence
-
-TOML schema:
-  [cache]
-  root = "/fast/disk"        # optional
-
-  [env]                      # overrides
-  GO111MODULE = "auto"       # must be one of: auto, on, off
-  GOPATH = ["/usr/share/gocode", "."]  # string or list; "." expands to script dir
-
-  [env_append]               # appended after overrides
-  GOPATH = [".", "/opt/local/go"]
-
-  [build]
-  flags = ["-tags=...", "-ldflags=-s -w"]
-
-Shebang policy for `apply`:
-  - If current shebang is a different absolute path (not env), rewrite to this binary's absolute path.
-  - If current shebang is "#!/usr/bin/env goscripter run":
-      keep it ONLY if exec.LookPath("goscripter") resolves to this same binary.
-      otherwise rewrite to this binary's absolute path.
-
-Strict config handling:
-  • If any consulted config *exists* but fails to parse:
-      - run/apply/rm/gc: fail with an error naming the file
-      - ls: warn and continue
-  • If GOPATH contains invalid entries (only "." or absolute paths allowed) or GO111MODULE ∉ {auto,on,off}:
-      - run/apply/rm/gc: fail with an error naming the file/key/index
-      - ls: warn and continue
-
-New output labeling:
-  • apply --verbose prints only "apply:" lines and ends with "apply: did not run"
-  • run   --verbose prints only "run:"   lines
 */
 
 const (
-	manifestName    = "script.toml"
-	modifiedSrcName = "main.go"
-	cacheBinName    = "prog"
+	manifestName     = "script.toml"
+	modifiedSrcName  = "main.go"
+	cacheBinName     = "prog"
+	depsSnapshotName = "deps.toml"
 
 	defaultGOMODULE = "auto"
 	defaultGOPATH   = "/usr/share/gocode"
@@ -86,11 +41,11 @@ type Config struct {
 
 	Env struct {
 		GO111MODULE string      `toml:"GO111MODULE"`
-		GOPATH      interface{} `toml:"GOPATH"` // string or []string
+		GOPATH      interface{} `toml:"GOPATH"`
 	} `toml:"env"`
 
 	EnvAppend struct {
-		GOPATH interface{} `toml:"GOPATH"` // string or []string
+		GOPATH interface{} `toml:"GOPATH"`
 	} `toml:"env_append"`
 
 	Build struct {
@@ -103,6 +58,34 @@ type Manifest struct {
 	Flags          []string `toml:"flags"`
 	EnvGO111MODULE string   `toml:"env_go111module"`
 	EnvGOPATH      []string `toml:"env_gopath"`
+}
+
+type DepsSnapshot struct {
+	Meta struct {
+		GeneratedAt string   `toml:"generated_at"`
+		GoVersion   string   `toml:"goversion"`
+		GOOS        string   `toml:"goos"`
+		GOARCH      string   `toml:"goarch"`
+		GOROOT      string   `toml:"goroot"`
+		GO111MODULE string   `toml:"go111module"`
+		GOPATH      []string `toml:"gopath"`
+		Flags       []string `toml:"flags"`
+	} `toml:"meta"`
+	Deps []DepEntry   `toml:"dep"`
+	Fb   *FallbackRec `toml:"fallback_scan,omitempty"`
+}
+
+type DepEntry struct {
+	ImportPath string `toml:"import_path"`
+	Dir        string `toml:"dir"`
+	MaxMTime   int64  `toml:"max_mtime"`
+	FileCount  int    `toml:"file_count"`
+}
+
+type FallbackRec struct {
+	Root      string `toml:"root"`
+	MaxMTime  int64  `toml:"max_mtime"`
+	FileCount int    `toml:"file_count"`
 }
 
 func fatalf(format string, a ...any) { fmt.Fprintf(os.Stderr, format+"\n", a...); os.Exit(1) }
@@ -156,11 +139,10 @@ func xdgCacheHome() string {
 	return filepath.Join(h, ".cache")
 }
 
-// cache base resolution
 type cacheBase struct {
-	base         string // directory that contains "goscripter" subdir
-	homeStyle    bool   // true => ~/.cache style (no $USER component)
-	resolvedRoot string // base + "/goscripter" or base+"/goscripter/$USER"
+	base         string
+	homeStyle    bool
+	resolvedRoot string
 }
 
 func resolveCacheBase(globalMerged Config) cacheBase {
@@ -169,28 +151,17 @@ func resolveCacheBase(globalMerged Config) cacheBase {
 		if xc == "" {
 			fatalf("cannot resolve cache home (no $HOME and no XDG_CACHE_HOME)")
 		}
-		return cacheBase{
-			base:         xc,
-			homeStyle:    true,
-			resolvedRoot: filepath.Join(xc, "goscripter"),
-		}
+		return cacheBase{base: xc, homeStyle: true, resolvedRoot: filepath.Join(xc, "goscripter")}
 	}
 	base := filepath.Clean(globalMerged.Cache.Root)
-	return cacheBase{
-		base:         base,
-		homeStyle:    false,
-		resolvedRoot: filepath.Join(base, "goscripter", userName()),
-	}
+	return cacheBase{base: base, homeStyle: false, resolvedRoot: filepath.Join(base, "goscripter", userName())}
 }
 
-// cacheDir = <resolvedRoot>/<abs/path/to/script.go>/
 func cacheDirFor(cb cacheBase, scriptAbs string) string {
 	clean := strings.TrimPrefix(filepath.Clean(scriptAbs), string(filepath.Separator))
 	return filepath.Join(cb.resolvedRoot, clean) + string(filepath.Separator)
 }
-func ensureDir(dir string) error { return os.MkdirAll(dir, 0o755) }
-
-// user cache root for --all
+func ensureDir(dir string) error        { return os.MkdirAll(dir, 0o755) }
 func userCacheRoot(cb cacheBase) string { return cb.resolvedRoot }
 
 // --- shebang handling ---
@@ -229,12 +200,7 @@ func parseShebang(script string) (shebangInfo, error) {
 	if len(fields) == 0 {
 		return shebangInfo{hasShebang: true, line: line}, nil
 	}
-	return shebangInfo{
-		hasShebang: true,
-		line:       line,
-		path:       fields[0],
-		argv:       fields[1:],
-	}, nil
+	return shebangInfo{hasShebang: true, line: line, path: fields[0], argv: fields[1:]}, nil
 }
 
 func isEnvGoscripter(sb shebangInfo) bool {
@@ -244,10 +210,7 @@ func isEnvGoscripter(sb shebangInfo) bool {
 	if !strings.HasSuffix(sb.path, "/usr/bin/env") && sb.path != "env" {
 		return false
 	}
-	if len(sb.argv) == 0 {
-		return false
-	}
-	return sb.argv[0] == "goscripter"
+	return len(sb.argv) > 0 && sb.argv[0] == "goscripter"
 }
 func sameFile(a, b string) bool {
 	ap, _ := filepath.EvalSymlinks(a)
@@ -312,12 +275,8 @@ func writeShebangLinePreserveMode(script, newLine string) (changed bool, err err
 
 // --- config loading/validation/merging ---
 
-func fileExists(p string) bool {
-	_, err := os.Stat(p)
-	return err == nil
-}
+func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
 
-// decode a config file; return parse error wrapped with path if it exists
 func decodeConfigStrict(p string) (Config, error) {
 	var cfg Config
 	if !fileExists(p) {
@@ -350,21 +309,10 @@ func asStringSlice(x interface{}) []string {
 	}
 }
 
-func validateGO111(s string) bool {
-	switch s {
-	case "", "auto", "on", "off":
-		return true
-	default:
-		return false
-	}
-}
-
+func validateGO111(s string) bool { return s == "" || s == "auto" || s == "on" || s == "off" }
 func validateGOPATHList(vals []string) (ok bool, badIdx int, badVal string) {
 	for i, v := range vals {
-		if v == "." {
-			continue
-		}
-		if filepath.IsAbs(v) {
+		if v == "." || filepath.IsAbs(v) {
 			continue
 		}
 		return false, i, v
@@ -376,20 +324,16 @@ type cfgErr struct{ msg string }
 
 func (e cfgErr) Error() string { return e.msg }
 
-// validate a single Config, returning errors (with file path context provided by caller)
 func validateConfig(c Config, path string) []error {
 	var errs []error
-	// env.GO111MODULE
 	if !validateGO111(c.Env.GO111MODULE) {
 		errs = append(errs, cfgErr{fmt.Sprintf("%s: [env].GO111MODULE must be one of {auto,on,off}; got %q", path, c.Env.GO111MODULE)})
 	}
-	// env.GOPATH
 	if gp := asStringSlice(c.Env.GOPATH); gp != nil {
 		if ok, idx, bad := validateGOPATHList(gp); !ok {
 			errs = append(errs, cfgErr{fmt.Sprintf("%s: [env].GOPATH[%d] = %q is invalid; use absolute paths or \".\"", path, idx, bad)})
 		}
 	}
-	// env_append.GOPATH
 	if gp := asStringSlice(c.EnvAppend.GOPATH); gp != nil {
 		if ok, idx, bad := validateGOPATHList(gp); !ok {
 			errs = append(errs, cfgErr{fmt.Sprintf("%s: [env_append].GOPATH[%d] = %q is invalid; use absolute paths or \".\"", path, idx, bad)})
@@ -405,7 +349,7 @@ type mergedEnv struct {
 type mergedConfig struct {
 	env    mergedEnv
 	flags  []string
-	global Config // includes cache.root
+	global Config
 }
 
 func mergeConfig(globOrdered []Config, local Config, scriptDir string) mergedConfig {
@@ -436,14 +380,11 @@ func mergeConfig(globOrdered []Config, local Config, scriptDir string) mergedCon
 		apply(g)
 	}
 	apply(local)
-
-	// expand "." to script dir
 	for i := range m.env.GOPATH {
 		if m.env.GOPATH[i] == "." {
 			m.env.GOPATH[i] = scriptDir
 		}
 	}
-	// de-dup preserve order
 	seen := map[string]bool{}
 	out := m.env.GOPATH[:0]
 	for _, g := range m.env.GOPATH {
@@ -460,8 +401,8 @@ func mergeConfig(globOrdered []Config, local Config, scriptDir string) mergedCon
 type loadMode int
 
 const (
-	loadStrict  loadMode = iota // fatal on parse/validation errors
-	loadLenient                 // collect parse/validation warnings
+	loadStrict loadMode = iota
+	loadLenient
 )
 
 type cfgLoad struct {
@@ -486,22 +427,20 @@ func loadGlobalConfigs(cwd string, mode loadMode) cfgLoad {
 		if err != nil {
 			if mode == loadStrict {
 				out.errs = append(out.errs, err)
-				continue
+			} else {
+				out.warns = append(out.warns, "parse error: "+err.Error())
 			}
-			out.warns = append(out.warns, "parse error: "+err.Error())
 			continue
 		}
-		// validate this file
 		if verrs := validateConfig(c, p); len(verrs) > 0 {
 			if mode == loadStrict {
+				out.errs = append(out.errs, verrs...)
+			} else {
 				for _, e := range verrs {
-					out.errs = append(out.errs, e)
+					out.warns = append(out.warns, e.Error())
 				}
-				continue
 			}
-			for _, e := range verrs {
-				out.warns = append(out.warns, e.Error())
-			}
+			continue
 		}
 		out.configs = append(out.configs, c)
 	}
@@ -509,6 +448,7 @@ func loadGlobalConfigs(cwd string, mode loadMode) cfgLoad {
 }
 
 func loadLocalConfig(path string, mode loadMode) (Config, []string, []error) {
+	//var warns, errsOut []string
 	var warns []string
 	var errs []error
 	if !fileExists(path) {
@@ -583,6 +523,320 @@ func sliceEqual(a, b []string) bool {
 	return true
 }
 
+// --- toolchain & deps (GOPATH mode only) ---
+
+type goEnvInfo struct {
+	GOVERSION string `json:"GOVERSION"`
+	GOOS      string `json:"GOOS"`
+	GOARCH    string `json:"GOARCH"`
+	GOROOT    string `json:"GOROOT"`
+}
+
+func getGoEnv(env mergedEnv) (goEnvInfo, error) {
+	var info goEnvInfo
+	cmd := exec.Command("go", "env", "-json")
+	envList := os.Environ()
+	set := func(k, v string) {
+		found := false
+		for i := range envList {
+			if strings.HasPrefix(envList[i], k+"=") {
+				envList[i] = k + "=" + v
+				found = true
+				break
+			}
+		}
+		if !found {
+			envList = append(envList, k+"="+v)
+		}
+	}
+	set("GO111MODULE", env.GO111MODULE)
+	set("GOPATH", strings.Join(env.GOPATH, string(os.PathListSeparator)))
+	cmd.Env = envList
+	out, err := cmd.Output()
+	if err != nil {
+		return info, err
+	}
+	if err := json.Unmarshal(out, &info); err != nil {
+		return info, err
+	}
+	return info, nil
+}
+
+type listPkg struct {
+	ImportPath string   `json:"ImportPath"`
+	Dir        string   `json:"Dir"`
+	Standard   bool     `json:"Standard"`
+	GoFiles    []string `json:"GoFiles"`
+	CgoFiles   []string `json:"CgoFiles"`
+	CFiles     []string `json:"CFiles"`
+	HFiles     []string `json:"HFiles"`
+	SFiles     []string `json:"SFiles"`
+	SysoFiles  []string `json:"SysoFiles"`
+	OtherFiles []string `json:"OtherFiles"`
+}
+
+func gatherFilesFor(pkg listPkg) []string {
+	var out []string
+	add := func(xs []string) {
+		for _, f := range xs {
+			if f == "" {
+				continue
+			}
+			out = append(out, filepath.Join(pkg.Dir, f))
+		}
+	}
+	add(pkg.GoFiles)
+	add(pkg.CgoFiles)
+	add(pkg.CFiles)
+	add(pkg.HFiles)
+	add(pkg.SFiles)
+	add(pkg.SysoFiles)
+	add(pkg.OtherFiles)
+	return out
+}
+
+func goListDeps(cacheDir string, env mergedEnv) ([]DepEntry, error) {
+	cmd := exec.Command("go", "list", "-deps", "-json", ".")
+	cmd.Dir = cacheDir
+	envList := os.Environ()
+	set := func(k, v string) {
+		found := false
+		for i := range envList {
+			if strings.HasPrefix(envList[i], k+"=") {
+				envList[i] = k + "=" + v
+				found = true
+				break
+			}
+		}
+		if !found {
+			envList = append(envList, k+"="+v)
+		}
+	}
+	set("GO111MODULE", env.GO111MODULE)
+	set("GOPATH", strings.Join(env.GOPATH, string(os.PathListSeparator)))
+	cmd.Env = envList
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	defer func() { _ = cmd.Wait() }()
+
+	dec := json.NewDecoder(stdout)
+	var deps []DepEntry
+	seen := map[string]bool{}
+	for {
+		var p listPkg
+		if err := dec.Decode(&p); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
+		}
+		if p.Standard || p.ImportPath == "" || p.Dir == "" {
+			continue
+		}
+		if seen[p.ImportPath] {
+			continue
+		}
+		seen[p.ImportPath] = true
+
+		files := gatherFilesFor(p)
+		var max int64
+		count := 0
+		for _, fp := range files {
+			if st, e := os.Stat(fp); e == nil {
+				count++
+				mt := st.ModTime().Unix()
+				if mt > max {
+					max = mt
+				}
+			}
+		}
+		deps = append(deps, DepEntry{
+			ImportPath: p.ImportPath,
+			Dir:        resolveSymlinkDir(p.Dir),
+			MaxMTime:   max,
+			FileCount:  count,
+		})
+	}
+	sort.Slice(deps, func(i, j int) bool { return deps[i].ImportPath < deps[j].ImportPath })
+	return deps, nil
+}
+
+func resolveSymlinkDir(d string) string {
+	if r, err := filepath.EvalSymlinks(d); err == nil {
+		return r
+	}
+	return d
+}
+
+func fallbackScan(scriptDir string) (FallbackRec, error) {
+	root := filepath.Join(scriptDir, "src")
+	var fb FallbackRec
+	fb.Root = root
+	var max int64
+	count := 0
+	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if !(strings.HasSuffix(p, ".go") || strings.HasSuffix(p, ".c") || strings.HasSuffix(p, ".h") || strings.HasSuffix(p, ".s")) {
+			return nil
+		}
+		if st, e := os.Stat(p); e == nil {
+			count++
+			mt := st.ModTime().Unix()
+			if mt > max {
+				max = mt
+			}
+		}
+		return nil
+	})
+	fb.MaxMTime = max
+	fb.FileCount = count
+	return fb, nil
+}
+
+func writeDepsSnapshot(cacheDir string, env mergedEnv, flags []string, scriptDir string) error {
+	info, _ := getGoEnv(env)
+
+	var snap DepsSnapshot
+	snap.Meta.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+	snap.Meta.GoVersion = info.GOVERSION
+	snap.Meta.GOOS = info.GOOS
+	snap.Meta.GOARCH = info.GOARCH
+	snap.Meta.GOROOT = info.GOROOT
+	snap.Meta.GO111MODULE = env.GO111MODULE
+	snap.Meta.GOPATH = append([]string{}, env.GOPATH...)
+	snap.Meta.Flags = append([]string{}, flags...)
+
+	if deps, e := goListDeps(cacheDir, env); e == nil && len(deps) > 0 {
+		snap.Deps = deps
+	} else {
+		// fallback only if GOPATH included scriptDir
+		for _, gp := range env.GOPATH {
+			if filepath.Clean(gp) == filepath.Clean(scriptDir) {
+				if fb, fe := fallbackScan(scriptDir); fe == nil {
+					snap.Fb = &fb
+				}
+				break
+			}
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(snap); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(cacheDir, depsSnapshotName), buf.Bytes(), 0o644)
+}
+
+func readDepsSnapshot(p string) (DepsSnapshot, error) {
+	var s DepsSnapshot
+	if !fileExists(p) {
+		return s, os.ErrNotExist
+	}
+	_, err := toml.DecodeFile(p, &s)
+	return s, err
+}
+
+func compareToolchain(old DepsSnapshot, cur DepsSnapshot) (changed bool, reasons []string) {
+	check := func(name, a, b string) {
+		if a != b {
+			changed = true
+			reasons = append(reasons, fmt.Sprintf("toolchain %s changed: %s -> %s", name, a, b))
+		}
+	}
+	check("GOVERSION", old.Meta.GoVersion, cur.Meta.GoVersion)
+	check("GOOS", old.Meta.GOOS, cur.Meta.GOOS)
+	check("GOARCH", old.Meta.GOARCH, cur.Meta.GOARCH)
+	check("GOROOT", old.Meta.GOROOT, cur.Meta.GOROOT)
+	return
+}
+
+func depsMap(xs []DepEntry) map[string]DepEntry {
+	m := make(map[string]DepEntry, len(xs))
+	for _, d := range xs {
+		m[d.ImportPath] = d
+	}
+	return m
+}
+
+func compareDeps(old DepsSnapshot, cur DepsSnapshot) (changed bool, reasons []string) {
+	if old.Fb != nil || cur.Fb != nil {
+		if (old.Fb == nil) != (cur.Fb == nil) {
+			return true, append(reasons, "deps discovery mode changed (fallback vs go list)")
+		}
+		if old.Fb.Root != cur.Fb.Root {
+			return true, append(reasons, "fallback root changed")
+		}
+		if cur.Fb.MaxMTime > old.Fb.MaxMTime {
+			return true, append(reasons, fmt.Sprintf("fallback mtime increased: %d -> %d", old.Fb.MaxMTime, cur.Fb.MaxMTime))
+		}
+		return false, reasons
+	}
+
+	oldm := depsMap(old.Deps)
+	curm := depsMap(cur.Deps)
+
+	for k := range curm {
+		if _, ok := oldm[k]; !ok {
+			changed = true
+			reasons = append(reasons, "dep set changed: +"+k)
+		}
+	}
+	for k := range oldm {
+		if _, ok := curm[k]; !ok {
+			changed = true
+			reasons = append(reasons, "dep set changed: -"+k)
+		}
+	}
+	for k, nv := range curm {
+		if ov, ok := oldm[k]; ok {
+			if nv.MaxMTime > ov.MaxMTime {
+				changed = true
+				oldT := time.Unix(ov.MaxMTime, 0).Format(time.RFC3339)
+				newT := time.Unix(nv.MaxMTime, 0).Format(time.RFC3339)
+				reasons = append(reasons, fmt.Sprintf("dep changed: %s (%s -> %s)", k, oldT, newT))
+			}
+		}
+	}
+	return
+}
+
+func currentDepsSnapshot(cacheDir string, env mergedEnv, flags []string, scriptDir string) DepsSnapshot {
+	info, _ := getGoEnv(env)
+	var cur DepsSnapshot
+	cur.Meta.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+	cur.Meta.GoVersion = info.GOVERSION
+	cur.Meta.GOOS = info.GOOS
+	cur.Meta.GOARCH = info.GOARCH
+	cur.Meta.GOROOT = info.GOROOT
+	cur.Meta.GO111MODULE = env.GO111MODULE
+	cur.Meta.GOPATH = append([]string{}, env.GOPATH...)
+	cur.Meta.Flags = append([]string{}, flags...)
+
+	if deps, e := goListDeps(cacheDir, env); e == nil && len(deps) > 0 {
+		cur.Deps = deps
+	} else {
+		for _, gp := range env.GOPATH {
+			if filepath.Clean(gp) == filepath.Clean(scriptDir) {
+				if fb, fe := fallbackScan(scriptDir); fe == nil {
+					cur.Fb = &fb
+				}
+				break
+			}
+		}
+	}
+	return cur
+}
+
+// --- cache analysis, build, run ---
+
 type cacheDecision struct {
 	rebuild   bool
 	reasons   []string
@@ -604,13 +858,11 @@ func analyzeCache(scriptAbs, cacheDir string, flags []string, env mergedEnv) cac
 	dec.buildEnvM = "GO111MODULE=" + env.GO111MODULE
 	dec.buildEnvP = "GOPATH=" + strings.Join(env.GOPATH, string(os.PathListSeparator))
 
-	// Binary status
 	if fi, e := os.Stat(binPath); e == nil {
 		dec.binOK = true
 		dec.binMTime = fi.ModTime()
 	}
 
-	// Manifest/binary checks
 	if err != nil {
 		dec.rebuild = true
 		dec.reasons = append(dec.reasons, "manifest missing")
@@ -620,7 +872,6 @@ func analyzeCache(scriptAbs, cacheDir string, flags []string, env mergedEnv) cac
 		dec.reasons = append(dec.reasons, "binary missing")
 	}
 
-	// Source mtime
 	if err == nil && m.SourceMTime != mtimeUnix(scriptAbs) {
 		dec.rebuild = true
 		old := time.Unix(m.SourceMTime, 0).Format(time.RFC3339)
@@ -628,13 +879,11 @@ func analyzeCache(scriptAbs, cacheDir string, flags []string, env mergedEnv) cac
 		dec.reasons = append(dec.reasons, "source mtime changed: "+old+" -> "+new)
 	}
 
-	// Flags
 	if err == nil && !flagsEqual(m.Flags, flags) {
 		dec.rebuild = true
 		dec.reasons = append(dec.reasons, "build flags changed")
 	}
 
-	// Env
 	if err == nil {
 		if m.EnvGO111MODULE != env.GO111MODULE {
 			dec.rebuild = true
@@ -647,6 +896,24 @@ func analyzeCache(scriptAbs, cacheDir string, flags []string, env mergedEnv) cac
 	} else {
 		dec.reasons = append(dec.reasons, "env not recorded (first build)")
 	}
+
+	// Deps & toolchain comparison when we have a prior snapshot
+	depsPath := filepath.Join(cacheDir, depsSnapshotName)
+	if fileExists(depsPath) && fileExists(filepath.Join(cacheDir, modifiedSrcName)) {
+		oldSnap, e1 := readDepsSnapshot(depsPath)
+		if e1 == nil {
+			curSnap := currentDepsSnapshot(cacheDir, env, flags, filepath.Dir(scriptAbs))
+			if ch, rs := compareToolchain(oldSnap, curSnap); ch {
+				dec.rebuild = true
+				dec.reasons = append(dec.reasons, rs...)
+			}
+			if ch, rs := compareDeps(oldSnap, curSnap); ch {
+				dec.rebuild = true
+				dec.reasons = append(dec.reasons, rs...)
+			}
+		}
+	}
+
 	return dec
 }
 
@@ -696,7 +963,7 @@ func goBuild(cacheDir string, flags []string, env mergedEnv) error {
 	return cmd.Run()
 }
 
-// refresh/build with labeled verbose output
+// refreshCache now also generates deps.toml on cache hits if missing
 func refreshCache(op string, scriptAbs string, cb cacheBase, flags []string, env mergedEnv, verbose bool) (cacheDecision, error) {
 	cdir := cacheDirFor(cb, scriptAbs)
 	if err := ensureDir(cdir); err != nil {
@@ -729,14 +996,30 @@ func refreshCache(op string, scriptAbs string, cb cacheBase, flags []string, env
 		if err := writeManifest(filepath.Join(cdir, manifestName), m); err != nil && verbose {
 			warnf("write manifest: %v", err)
 		}
+		if err := writeDepsSnapshot(cdir, env, flags, filepath.Dir(scriptAbs)); err != nil && verbose {
+			warnf("write deps: %v", err)
+		}
 		dec = analyzeCache(scriptAbs, cdir, flags, env)
 		if verbose {
 			fmt.Printf("%s: cache rebuilt\n", op)
 		}
-	} else if verbose {
-		fmt.Printf("%s: using cached binary\n", op)
-		if dec.binOK {
-			fmt.Printf("%s: cached binary mtime: %s\n", op, dec.binMTime.Format(time.RFC3339))
+	} else {
+		// cache hit: if deps snapshot is missing, generate it now
+		depsPath := filepath.Join(cdir, depsSnapshotName)
+		if !fileExists(depsPath) {
+			if err := writeDepsSnapshot(cdir, env, flags, filepath.Dir(scriptAbs)); err != nil {
+				if verbose {
+					warnf("%s: deps snapshot missing; generation failed: %v", op, err)
+				}
+			} else if verbose {
+				fmt.Printf("%s: deps snapshot missing; generated now\n", op)
+			}
+		}
+		if verbose {
+			fmt.Printf("%s: using cached binary\n", op)
+			if dec.binOK {
+				fmt.Printf("%s: cached binary mtime: %s\n", op, dec.binMTime.Format(time.RFC3339))
+			}
 		}
 	}
 	return dec, nil
@@ -821,36 +1104,136 @@ func measureTree(root string, verbose bool) (rmStats, error) {
 
 func removeTree(root string) error { return os.RemoveAll(root) }
 
-// --- commands ---
+// --- fmt (fixed): format shebang-free body in cache, then write back atomically ---
 
-func cmdFmt(targets []string) int {
-	if len(targets) == 0 {
-		files, _ := filepath.Glob("*.go")
-		targets = files
-	}
-	ok := 0
-	for _, f := range targets {
-		if changed, err := writeShebangLinePreserveMode(f, desiredShebangAbs()); err != nil {
-			warnf("fmt: shebang: %s: %v", f, err)
-		} else if changed {
-			// no chmod; fmt preserves mode
-		}
-		cmd := exec.Command("go", "fmt", f)
+func runFormatterOn(path string) error {
+	if _, err := exec.LookPath("gofmt"); err == nil {
+		cmd := exec.Command("gofmt", "-w", path)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			warnf("fmt: go fmt failed: %s", f)
-			continue
-		}
-		ok++
+		return cmd.Run()
 	}
-	if ok == 0 && len(targets) == 0 {
+	cmd := exec.Command("go", "fmt", path)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func fmtOne(cwd string, gl cfgLoad, script string) error {
+	abs, err := filepath.Abs(script)
+	if err != nil {
+		return err
+	}
+	// local config (lenient for fmt)
+	lc, _, _ := loadLocalConfig(abs+".toml", loadLenient)
+	mc := mergeConfig(gl.configs, lc, filepath.Dir(abs))
+	cb := resolveCacheBase(mc.global)
+	cdir := cacheDirFor(cb, abs)
+	if err := ensureDir(cdir); err != nil {
+		return err
+	}
+
+	origInfo, err := os.Stat(abs)
+	if err != nil {
+		return err
+	}
+	origMode := origInfo.Mode().Perm()
+	content, err := os.ReadFile(abs)
+	if err != nil {
+		return err
+	}
+
+	// split shebang/body
+	body := content
+	shebang := ""
+	if bytes.HasPrefix(body, []byte("#!")) {
+		if idx := bytes.IndexByte(body, '\n'); idx >= 0 {
+			shebang = string(body[:idx])
+			body = body[idx+1:]
+		} else {
+			// file is only a shebang line; nothing else to format
+			body = []byte{}
+		}
+	}
+
+	// write temp body in cache dir
+	tmpBody := filepath.Join(cdir, ".fmt-body.go")
+	if err := os.WriteFile(tmpBody, body, 0o644); err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmpBody) }()
+
+	// run formatter on temp body
+	if err := runFormatterOn(tmpBody); err != nil {
+		return fmt.Errorf("fmt: formatter failed for %s: %w", script, err)
+	}
+	formatted, err := os.ReadFile(tmpBody)
+	if err != nil {
+		return err
+	}
+
+	// reassemble with normalized shebang (absolute goscripter path)
+	newShebang := desiredShebangAbs()
+	var out bytes.Buffer
+	out.WriteString(newShebang)
+	out.WriteByte('\n')
+	out.Write(formatted)
+
+	// if identical to current file (taking into account existing shebang), skip rewrite
+	var cur bytes.Buffer
+	if shebang == "" {
+		// original had no shebang; simulate none
+		cur.Write(content)
+	} else {
+		// normalize current to compare fairly: replace current shebang with desired
+		cur.WriteString(newShebang)
+		cur.WriteByte('\n')
+		cur.Write(body)
+	}
+	if bytes.Equal(out.Bytes(), cur.Bytes()) {
+		return nil // nothing to change; avoid mtime churn
+	}
+
+	// atomic replace
+	tmp := abs + ".goscripter.fmt.tmp"
+	if err := os.WriteFile(tmp, out.Bytes(), origMode); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, abs); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func cmdFmt(args []string) int {
+	// targets = args (if none, use *.go in CWD)
+	var targets []string
+	if len(args) == 0 {
+		files, _ := filepath.Glob("*.go")
+		targets = files
+	} else {
+		targets = args
+	}
+	if len(targets) == 0 {
 		fmt.Println("fmt: no .go files in current directory")
+		return 0
+	}
+
+	cwd, _ := os.Getwd()
+	gl := loadGlobalConfigs(cwd, loadLenient)
+	for _, t := range targets {
+		if err := fmtOne(cwd, gl, t); err != nil {
+			warnf("%v", err)
+		}
 	}
 	return 0
 }
 
-func printDescForScript(script string, cb cacheBase, mc mergedConfig, verbose bool) {
+// --- ls / rm / apply / run / gc (unchanged behavior except deps-gen-on-hit) ---
+
+func printDescForScript(script string, cb cacheBase, mc mergedConfig, verbose bool, showDeps bool) {
 	abs, err := filepath.Abs(script)
 	if err != nil {
 		warnf("ls: %s: %v", script, err)
@@ -884,6 +1267,7 @@ func printDescForScript(script string, cb cacheBase, mc mergedConfig, verbose bo
 	man := filepath.Join(cdir, manifestName)
 	bin := filepath.Join(cdir, cacheBinName)
 	mod := filepath.Join(cdir, modifiedSrcName)
+	dep := filepath.Join(cdir, depsSnapshotName)
 
 	if m, err := readManifest(man); err == nil {
 		fmt.Println("Manifest:      present")
@@ -902,11 +1286,22 @@ func printDescForScript(script string, cb cacheBase, mc mergedConfig, verbose bo
 		fmt.Println("Binary:        (missing)")
 	}
 
+	if s, err := readDepsSnapshot(dep); err == nil {
+		if s.Fb != nil {
+			fmt.Printf("Deps:          fallback scan (root=%s, files=%d)\n", s.Fb.Root, s.Fb.FileCount)
+		} else {
+			fmt.Printf("Deps:          %d packages tracked\n", len(s.Deps))
+		}
+	} else {
+		fmt.Println("Deps:          (missing)")
+	}
+
 	if verbose {
 		fmt.Println("Cache Dir:     ", cdir)
 		fmt.Println("Modified Src:  ", mod)
 		fmt.Println("Manifest Path: ", man)
 		fmt.Println("Binary Path:   ", bin)
+		fmt.Println("Deps Path:     ", dep)
 		dec := analyzeCache(abs, cdir, mc.flags, mc.env)
 		if dec.rebuild {
 			fmt.Println("Would rebuild: yes")
@@ -929,10 +1324,30 @@ func printDescForScript(script string, cb cacheBase, mc mergedConfig, verbose bo
 			fmt.Println("env goscripter: (not found)")
 		}
 	}
+
+	if showDeps {
+		if s, err := readDepsSnapshot(dep); err == nil {
+			if s.Fb != nil {
+				fmt.Printf("Deps (fallback root=%s, files=%d, max_mtime=%s)\n",
+					s.Fb.Root, s.Fb.FileCount, time.Unix(s.Fb.MaxMTime, 0).Format(time.RFC3339))
+			} else if len(s.Deps) > 0 {
+				fmt.Println("Deps (non-stdlib):")
+				for _, d := range s.Deps {
+					fmt.Printf("  - %s\n    dir=%s\n    newest=%s files=%d\n",
+						d.ImportPath, d.Dir, time.Unix(d.MaxMTime, 0).Format(time.RFC3339), d.FileCount)
+				}
+			} else {
+				fmt.Println("Deps: (empty)")
+			}
+		} else {
+			fmt.Println("Deps: (none)")
+		}
+	}
+
 	fmt.Println()
 }
 
-func listAllCache(cb cacheBase, verbose bool) {
+func listAllCache(cb cacheBase, verbose bool, showDeps bool) {
 	root := userCacheRoot(cb)
 	var hits []string
 	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
@@ -969,6 +1384,7 @@ func listAllCache(cb cacheBase, verbose bool) {
 		cdir := cacheDirFor(cb, s)
 		bin := filepath.Join(cdir, cacheBinName)
 		man := filepath.Join(cdir, manifestName)
+		dep := filepath.Join(cdir, depsSnapshotName)
 		if fi, err := os.Stat(bin); err == nil {
 			fmt.Printf("Binary:        present (%d bytes)\n", fi.Size())
 		} else {
@@ -978,10 +1394,24 @@ func listAllCache(cb cacheBase, verbose bool) {
 			fmt.Println("  source_mtime:", time.Unix(m.SourceMTime, 0))
 			fmt.Println("  flags:       ", strings.Join(m.Flags, " "))
 		}
+		if fileExists(dep) {
+			fmt.Println("Deps:          present")
+			if showDeps {
+				if sdp, e := readDepsSnapshot(dep); e == nil {
+					if sdp.Fb != nil {
+						fmt.Printf("  fallback root=%s files=%d newest=%s\n",
+							sdp.Fb.Root, sdp.Fb.FileCount, time.Unix(sdp.Fb.MaxMTime, 0).Format(time.RFC3339))
+					} else {
+						fmt.Printf("  packages=%d\n", len(sdp.Deps))
+					}
+				}
+			}
+		}
 		if verbose {
 			fmt.Println("Cache Dir:     ", cdir)
 			fmt.Println("Binary Path:   ", bin)
 			fmt.Println("Manifest Path: ", man)
+			fmt.Println("Deps Path:     ", dep)
 		}
 		fmt.Println()
 	}
@@ -994,6 +1424,7 @@ func cmdLs(args []string) int {
 	fs := flag.NewFlagSet("ls", flag.ExitOnError)
 	all := fs.Bool("all", false, "list the entire cache tree for the current user")
 	verbose := fs.Bool("verbose", false, "show cache paths, env, and rebuild reasoning")
+	depsFlag := fs.Bool("deps", false, "dump dependency list for each script")
 	_ = fs.Parse(args)
 	rest := fs.Args()
 
@@ -1006,7 +1437,7 @@ func cmdLs(args []string) int {
 	cb := resolveCacheBase(merged.global)
 
 	if *all {
-		listAllCache(cb, *verbose)
+		listAllCache(cb, *verbose, *depsFlag)
 		return 0
 	}
 
@@ -1030,7 +1461,7 @@ func cmdLs(args []string) int {
 		}
 		mc := mergeConfig(gl.configs, lc, filepath.Dir(abs))
 		cb = resolveCacheBase(mc.global)
-		printDescForScript(f, cb, mc, *verbose)
+		printDescForScript(f, cb, mc, *verbose, *depsFlag)
 	}
 	return 0
 }
@@ -1100,6 +1531,24 @@ func cmdRm(args []string) int {
 	return 0
 }
 
+// ensureOwnerExec adds u+x if missing. Logs when --verbose is on.
+func ensureOwnerExec(path string, verbose bool) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	mode := info.Mode().Perm()
+	if mode&0o100 == 0 {
+		if err := os.Chmod(path, mode|0o100); err != nil {
+			return err
+		}
+		if verbose {
+			fmt.Printf("apply: chmod u+x %s\n", path)
+		}
+	}
+	return nil
+}
+
 func cmdApply(y bool, script string, verbose bool) int {
 	if script == "" {
 		fatalf("apply: script.go required")
@@ -1109,6 +1558,7 @@ func cmdApply(y bool, script string, verbose bool) int {
 		fatalf("apply: %v", err)
 	}
 
+	// Shebang normalize (with optional prompt)
 	sb, err := parseShebang(abs)
 	if err != nil {
 		fatalf("apply: %v", err)
@@ -1129,32 +1579,23 @@ func cmdApply(y bool, script string, verbose bool) int {
 		if err != nil {
 			fatalf("apply: shebang: %v", err)
 		}
-		if changed {
-			// ensure u+x
-			info, e := os.Stat(abs)
-			if e == nil {
-				mode := info.Mode().Perm()
-				newMode := mode | 0o100
-				if newMode != mode {
-					if e2 := os.Chmod(abs, newMode); e2 != nil {
-						fatalf("apply: chmod: %v", e2)
-					}
-					if verbose {
-						fmt.Printf("apply: chmod u+x %s\n", abs)
-					}
-				}
-			}
-			if verbose {
+		if verbose {
+			if changed {
 				fmt.Printf("apply: shebang updated\n")
+			} else {
+				fmt.Printf("apply: shebang already correct\n")
 			}
-		} else if verbose {
-			fmt.Printf("apply: shebang already correct\n")
 		}
 	} else if verbose {
 		fmt.Printf("apply: shebang already correct\n")
 	}
 
-	// configs
+	// Always ensure owner-executable (single place for chmod logic)
+	if err := ensureOwnerExec(abs, verbose); err != nil {
+		fatalf("apply: chmod: %v", err)
+	}
+
+	// Load configs (strict), merge, refresh cache (no run)
 	cwd, _ := os.Getwd()
 	gl := loadGlobalConfigs(cwd, loadStrict)
 	if len(gl.errs) > 0 {
@@ -1176,7 +1617,6 @@ func cmdApply(y bool, script string, verbose bool) int {
 	mc := mergeConfig(gl.configs, local, filepath.Dir(abs))
 	cb := resolveCacheBase(mc.global)
 
-	// refresh cache (no run)
 	if _, err := refreshCache("apply", abs, cb, mc.flags, mc.env, verbose); err != nil {
 		fatalf("apply: %v", err)
 	}
@@ -1239,7 +1679,6 @@ func cmdRun(args []string) int {
 		fatalf("run: %v", err)
 	}
 
-	// DO NOT modify source here; just warn in verbose if non-goscripter shebang
 	if verbose {
 		if sb, e := parseShebang(abs); e == nil {
 			if !sb.hasShebang || (!isEnvGoscripter(sb) && !strings.Contains(sb.path, "goscripter")) {
@@ -1248,7 +1687,6 @@ func cmdRun(args []string) int {
 		}
 	}
 
-	// configs (strict)
 	cwd, _ := os.Getwd()
 	gl := loadGlobalConfigs(cwd, loadStrict)
 	if len(gl.errs) > 0 {
@@ -1270,7 +1708,6 @@ func cmdRun(args []string) int {
 	mc := mergeConfig(gl.configs, local, filepath.Dir(abs))
 	cb := resolveCacheBase(mc.global)
 
-	// build (if needed) & run
 	if _, err := refreshCache("run", abs, cb, mc.flags, mc.env, verbose); err != nil {
 		fatalf("run: %v", err)
 	}
@@ -1359,23 +1796,11 @@ func usage() {
 
 Usage:
   %s apply [-y] [--verbose|-v] <script.go>   Add/normalize shebang; ensure u+x; refresh cache (no run)
-  %s fmt [script.go]                         Normalize shebang to absolute path + go fmt (file or all *.go)
-  %s ls [--all] [--verbose|-v] [script.go]   Show cache/config (file, all *.go in CWD, or entire cache)
+  %s fmt [script.go]                         Format shebang-free body via cache temp; write back w/ normalized shebang
+  %s ls [--all] [--verbose|-v] [--deps] [script.go]   Show cache/config (file, CWD, or entire cache)
   %s rm [--all] [--verbose|-v] [script.go]   Remove cache for script, or whole cache tree for user
   %s gc [--stale-only] [--verbose|-v]        Remove stale cache entries (missing source scripts)
   %s run [--verbose|-v] <script.go> [-- args...]  Build if needed and run (verbose must be before "--")
-
-Cache:
-  Default home style: $XDG_CACHE_HOME/goscripter or ~/.cache/goscripter
-  Override via TOML [cache].root -> /<root>/goscripter/$USER/...
-
-Global config search order:
-  /etc/goscripter.toml
-  /usr/local/etc/goscripter.toml
-  ./goscripter.toml
-  ~/.config/goscripter/config.toml
-Local per-script:
-  <script.go>.toml
 `, runtime.GOOS, runtime.GOARCH, exe, exe, exe, exe, exe, exe)
 }
 
