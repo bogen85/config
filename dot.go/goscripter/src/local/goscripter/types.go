@@ -2,6 +2,10 @@ package goscripter
 
 import "time"
 
+type CmdPrefs struct {
+	AlwaysYes *bool `toml:"always_yes"`
+}
+
 type Config struct {
 	Cache struct {
 		Root string `toml:"root"`
@@ -19,6 +23,12 @@ type Config struct {
 	Build struct {
 		Flags []string `toml:"flags"`
 	} `toml:"build"`
+
+	Goscripter struct {
+		Nodeps *bool `toml:"nodeps"`
+	} `toml:"goscripter"`
+
+	Cmd map[string]CmdPrefs `toml:"cmd"`
 }
 
 type Manifest struct {
@@ -63,7 +73,9 @@ type mergedEnv struct {
 type mergedConfig struct {
 	Env    mergedEnv
 	Flags  []string
-	Global Config // includes cache.root
+	Global Config          // includes cache.root
+	Nodeps *bool           // optional preference from config
+	CmdYes map[string]bool // per-command assume-yes
 }
 
 type cfgErr struct{ msg string }

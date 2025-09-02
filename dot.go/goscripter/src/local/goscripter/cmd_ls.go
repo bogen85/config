@@ -10,6 +10,18 @@ import (
 	"time"
 )
 
+func newLsFlagSet() *flag.FlagSet {
+	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
+	all := FalseDefault()
+	verbose := FalseDefault()
+	depsFlag := FalseDefault()
+	fs.BoolVar(&all, "all", FalseDefault(), "list the entire cache tree for the current user")
+	fs.BoolVar(&verbose, "verbose", FalseDefault(), "show cache paths, env, and rebuild reasoning")
+	fs.BoolVar(&depsFlag, "deps", FalseDefault(), "dump dependency list for each script")
+	fs.Usage = func() { usageLs(fs) }
+	return fs
+}
+
 func printDescForScript(script string, cb cacheBase, mc mergedConfig, verbose bool, showDeps bool) {
 	abs, err := filepath.Abs(script)
 	if err != nil {
@@ -80,7 +92,7 @@ func printDescForScript(script string, cb cacheBase, mc mergedConfig, verbose bo
 		fmt.Println("Manifest Path: ", man)
 		fmt.Println("Binary Path:   ", bin)
 		fmt.Println("Deps Path:     ", dep)
-		dec := analyzeCache(abs, cdir, mc.Flags, mc.Env)
+		dec := analyzeCache(abs, cdir, mc.Flags, mc.Env, false /*skipDeps for analysis in ls*/)
 		if dec.rebuild {
 			fmt.Println("Would rebuild: yes")
 			for _, r := range dec.reasons {
@@ -200,9 +212,12 @@ func listAllCache(cb cacheBase, verbose bool, showDeps bool) {
 
 func CmdLs(args []string) int {
 	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
-	all := fs.Bool("all", FalseDefault(), "list the entire cache tree for the current user")
-	verbose := fs.Bool("verbose", FalseDefault(), "show cache paths, env, and rebuild reasoning")
-	depsFlag := fs.Bool("deps", FalseDefault(), "dump dependency list for each script")
+	all := FalseDefault()
+	verbose := FalseDefault()
+	depsFlag := FalseDefault()
+	fs.BoolVar(&all, "all", FalseDefault(), "list the entire cache tree for the current user")
+	fs.BoolVar(&verbose, "verbose", FalseDefault(), "show cache paths, env, and rebuild reasoning")
+	fs.BoolVar(&depsFlag, "deps", FalseDefault(), "dump dependency list for each script")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -216,8 +231,8 @@ func CmdLs(args []string) int {
 	var merged = mergeConfig(gl.Configs, Config{}, cwd)
 	cb := resolveCacheBase(merged.Global)
 
-	if *all {
-		listAllCache(cb, *verbose, *depsFlag)
+	if all {
+		listAllCache(cb, verbose, depsFlag)
 		return 0
 	}
 
@@ -241,7 +256,7 @@ func CmdLs(args []string) int {
 		}
 		mc := mergeConfig(gl.Configs, lc, filepath.Dir(abs))
 		cb = resolveCacheBase(mc.Global)
-		printDescForScript(f, cb, mc, *verbose, *depsFlag)
+		printDescForScript(f, cb, mc, verbose, depsFlag)
 	}
 	return 0
 }

@@ -2,12 +2,19 @@ package goscripter
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 )
+
+func newFmtFlagSet() *flag.FlagSet {
+	fs := flag.NewFlagSet("fmt", flag.ContinueOnError)
+	fs.Usage = func() { usageFmt(fs) }
+	return fs
+}
 
 func runFormatterOn(path string) error {
 	if _, err := exec.LookPath("gofmt"); err == nil {
@@ -49,8 +56,8 @@ func fmtOne(cwd string, gl cfgLoad, script string) error {
 	// split shebang/body
 	body := content
 	shebang := ""
-	if bytes.HasPrefix(body, []byte("#!")) {
-		if idx := bytes.IndexByte(body, '\n'); idx >= 0 {
+	if len(body) > 2 && body[0] == '#' && body[1] == '!' {
+		if idx := indexByte(body, '\n'); idx >= 0 {
 			shebang = string(body[:idx])
 			body = body[idx+1:]
 		} else {

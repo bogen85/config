@@ -7,10 +7,22 @@ import (
 	"path/filepath"
 )
 
+func newGcFlagSet() *flag.FlagSet {
+	fs := flag.NewFlagSet("gc", flag.ContinueOnError)
+	staleOnly := TrueDefault()
+	verbose := FalseDefault()
+	fs.BoolVar(&staleOnly, "stale-only", TrueDefault(), "remove only cache entries whose source script is missing")
+	fs.BoolVar(&verbose, "verbose", FalseDefault(), "print each file/dir removed and total space freed")
+	fs.Usage = func() { usageGc(fs) }
+	return fs
+}
+
 func CmdGC(args []string) int {
 	fs := flag.NewFlagSet("gc", flag.ContinueOnError)
-	staleOnly := fs.Bool("stale-only", TrueDefault(), "remove only cache entries whose source script is missing")
-	verbose := fs.Bool("verbose", FalseDefault(), "print each file/dir removed and total space freed")
+	staleOnly := TrueDefault()
+	verbose := FalseDefault()
+	fs.BoolVar(&staleOnly, "stale-only", TrueDefault(), "remove only cache entries whose source script is missing")
+	fs.BoolVar(&verbose, "verbose", FalseDefault(), "print each file/dir removed and total space freed")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -53,7 +65,7 @@ func CmdGC(args []string) int {
 			return nil
 		}
 		scriptAbs := string(filepath.Separator) + rel
-		if *staleOnly && fileExists(scriptAbs) {
+		if staleOnly && fileExists(scriptAbs) {
 			return nil
 		}
 		toRemove = append(toRemove, leaf)
@@ -66,7 +78,7 @@ func CmdGC(args []string) int {
 	}
 
 	for _, leaf := range toRemove {
-		st, _ := measureTree(leaf, *verbose)
+		st, _ := measureTree(leaf, verbose)
 		if err := removeTree(leaf); err != nil {
 			warnf("gc: remove %s: %v", leaf, err)
 			continue

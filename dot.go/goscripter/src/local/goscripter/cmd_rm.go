@@ -7,10 +7,22 @@ import (
 	"path/filepath"
 )
 
+func newRmFlagSet() *flag.FlagSet {
+	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
+	all := FalseDefault()
+	verbose := FalseDefault()
+	fs.BoolVar(&all, "all", FalseDefault(), "remove the entire cache tree for the current user")
+	fs.BoolVar(&verbose, "verbose", FalseDefault(), "print each file/dir removed and total space freed")
+	fs.Usage = func() { usageRm(fs) }
+	return fs
+}
+
 func CmdRm(args []string) int {
 	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
-	all := fs.Bool("all", FalseDefault(), "remove the entire cache tree for the current user")
-	verbose := fs.Bool("verbose", FalseDefault(), "print each file/dir removed and total space freed")
+	all := FalseDefault()
+	verbose := FalseDefault()
+	fs.BoolVar(&all, "all", FalseDefault(), "remove the entire cache tree for the current user")
+	fs.BoolVar(&verbose, "verbose", FalseDefault(), "print each file/dir removed and total space freed")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -26,13 +38,13 @@ func CmdRm(args []string) int {
 	}
 	cb := resolveCacheBase(mergeConfig(gl.Configs, Config{}, cwd).Global)
 
-	if *all {
+	if all {
 		root := userCacheRoot(cb)
 		if !fileExists(root) {
 			fmt.Println("rm --all:", root, "does not exist")
 			return 0
 		}
-		st, _ := measureTree(root, *verbose)
+		st, _ := measureTree(root, verbose)
 		if err := removeTree(root); err != nil {
 			eprintf("rm --all: %v", err)
 			return 2
@@ -42,7 +54,7 @@ func CmdRm(args []string) int {
 	}
 
 	if len(rest) != 1 {
-		eprintf("rm: script.go required (or use --all)")
+		usageRm(newRmFlagSet())
 		return 2
 	}
 	script := rest[0]
@@ -69,7 +81,7 @@ func CmdRm(args []string) int {
 		fmt.Println("Nothing to remove:", cdir)
 		return 0
 	}
-	st, _ := measureTree(cdir, *verbose)
+	st, _ := measureTree(cdir, verbose)
 	if err := removeTree(cdir); err != nil {
 		eprintf("rm: %v", err)
 		return 2

@@ -2,10 +2,9 @@ package goscripter
 
 const (
 	manifestName     = "script.toml"
-	modifiedSrcName  = "main.go"
-	cacheBinName     = "prog"
 	depsSnapshotName = "deps.toml"
-
-	defaultGOMODULE = "auto"
-	defaultGOPATH   = "/usr/share/gocode"
+	modifiedSrcName  = "buildable.go"
+	cacheBinName     = "prog"
+	defaultGOMODULE  = "auto"
+	defaultGOPATH    = "/usr/share/gocode"
 )

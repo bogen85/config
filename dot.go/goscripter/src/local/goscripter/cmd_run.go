@@ -1,14 +1,28 @@
 package goscripter
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-func parseRunArgs(args []string) (verbose bool, script string, pass []string, ok bool) {
+func newRunFlagSet() *flag.FlagSet {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	verbose := FalseDefault()
+	nodeps := FalseDefault()
+	fs.BoolVar(&verbose, "verbose", FalseDefault(), "verbose output")
+	fs.BoolVar(&verbose, "v", FalseDefault(), "verbose output (short)")
+	fs.BoolVar(&nodeps, "nodeps", FalseDefault(), "skip dependency/toolchain checks & snapshot")
+	fs.BoolVar(&nodeps, "n", FalseDefault(), "skip dependency/toolchain checks & snapshot (short)")
+	fs.Usage = func() { usageRun(fs) }
+	return fs
+}
+
+func parseRunArgs(args []string) (verbose bool, nodeps bool, script string, pass []string, ok bool) {
 	verbose = false
+	nodeps = false
 	pass = []string{}
 	dashdash := -1
 	for i, a := range args {
@@ -26,6 +40,10 @@ func parseRunArgs(args []string) (verbose bool, script string, pass []string, ok
 	for _, a := range pre {
 		if a == "--verbose" || a == "-v" {
 			verbose = true
+			continue
+		}
+		if a == "--nodeps" || a == "-n" {
+			nodeps = true
 			continue
 		}
 		if strings.HasPrefix(a, "-") && script == "" {
@@ -46,12 +64,25 @@ func parseRunArgs(args []string) (verbose bool, script string, pass []string, ok
 	return
 }
 
+func truthyEnv(name string) bool {
+	v := os.Getenv(name)
+	if v == "" {
+		return false
+	}
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func CmdRun(args []string) int {
 	if len(args) < 1 {
 		eprintf("run: missing arguments")
 		return 2
 	}
-	verbose, script, pass, ok := parseRunArgs(args)
+	verbose, nodeps, script, pass, ok := parseRunArgs(args)
 	if !ok {
 		eprintf("run: script.go required")
 		return 2
@@ -93,13 +124,26 @@ func CmdRun(args []string) int {
 	mc := mergeConfig(gl.Configs, local, filepath.Dir(abs))
 	cb := resolveCacheBase(mc.Global)
 
-	if _, err := refreshCache("run", abs, cb, mc.Flags, mc.Env, verbose); err != nil {
+	// nodeps precedence: CLI flag > env var > config [goscripter].nodeps
+	if !nodeps {
+		if truthyEnv("GOSCRIPTER_NODEP") || truthyEnv("GOSCRIPTER_NODEPS") {
+			nodeps = true
+		} else if mc.Nodeps != nil && *mc.Nodeps {
+			nodeps = true
+		}
+	}
+
+	if _, err := refreshCache("run", abs, cb, mc.Flags, mc.Env, verbose, nodeps); err != nil {
 		eprintf("run: %v", err)
 		return 2
 	}
 	if verbose {
 		cdir := cacheDirFor(cb, abs)
-		fmt.Printf("run: exec %s -- %s\n", filepath.Join(cdir, cacheBinName), strings.Join(pass, " "))
+		if nodeps {
+			fmt.Printf("run: (nodeps) exec %s -- %s\n", filepath.Join(cdir, cacheBinName), strings.Join(pass, " "))
+		} else {
+			fmt.Printf("run: exec %s -- %s\n", filepath.Join(cdir, cacheBinName), strings.Join(pass, " "))
+		}
 	}
 	return runFromCache(abs, cb, pass)
 }

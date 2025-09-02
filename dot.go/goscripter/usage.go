@@ -2,21 +2,29 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"runtime"
 )
 
-// printUsage is kept in package main, as requested.
 func printUsage() {
-	exe := os.Args[0]
-	fmt.Fprintf(os.Stderr, `goscripter (%s %s)
+	exe := "goscripter"
+	fmt.Printf(`%s (%s %s)
 
 Usage:
-  %s apply [-y] [--verbose|-v] <script.go>   Add/normalize shebang; ensure u+x; refresh cache (no run)
-  %s fmt [script.go]                         Format shebang-free body via cache temp; write back w/ normalized shebang
-  %s ls [--all] [--verbose|-v] [--deps] [script.go]   Show cache/config (file, CWD, or entire cache)
-  %s rm [--all] [--verbose|-v] [script.go]   Remove cache for script, or whole cache tree for user
-  %s gc [--stale-only] [--verbose|-v]        Remove stale cache entries (missing source scripts)
-  %s run [--verbose|-v] <script.go> [-- args...]  Build if needed and run (verbose must be before "--")
-`, runtime.GOOS, runtime.GOARCH, exe, exe, exe, exe, exe, exe)
+  %s <command> [<args>]
+
+Commands:
+  help         Show general help or help for a subcommand
+  apply        Add/normalize shebang; ensure u+x; refresh cache (no run)
+  update       Alias of 'apply'
+  fmt          Format shebang-free body via cache temp; write back with normalized shebang
+  ls           Show cache/config (file, CWD, or entire cache)
+  rm           Remove cache for a script, or whole cache tree for user
+  gc           Remove stale cache entries (missing source scripts)
+  build        Build (or reuse) cached binary without running (full deps check)
+  copy         Build (full deps) then copy cached binary to destination
+  install      Alias of 'copy'; also supports --uid/--gid/--mode
+  run          Build if needed and run (supports --nodeps)
+
+See 'goscripter help <command>' for detailed flags.
+`, exe, runtime.GOOS, runtime.GOARCH, exe)
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -76,6 +77,7 @@ func mergeConfig(globOrdered []Config, local Config, scriptDir string) mergedCon
 			GO111MODULE: defaultGOMODULE,
 			GOPATH:      []string{defaultGOPATH},
 		},
+		CmdYes: map[string]bool{},
 	}
 	apply := func(c Config) {
 		if c.Cache.Root != "" {
@@ -92,6 +94,17 @@ func mergeConfig(globOrdered []Config, local Config, scriptDir string) mergedCon
 		}
 		if len(c.Build.Flags) > 0 {
 			m.Flags = append(m.Flags, c.Build.Flags...)
+		}
+		if c.Goscripter.Nodeps != nil {
+			m.Nodeps = c.Goscripter.Nodeps
+		}
+		if c.Cmd != nil {
+			for k, prefs := range c.Cmd {
+				key := strings.ToLower(k)
+				if prefs.AlwaysYes != nil {
+					m.CmdYes[key] = *prefs.AlwaysYes
+				}
+			}
 		}
 	}
 	for _, g := range globOrdered {
