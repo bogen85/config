@@ -34,7 +34,6 @@ func fmtOne(cwd string, gl cfgLoad, script string) error {
 	if err != nil {
 		return err
 	}
-	// local config (lenient for fmt)
 	lc, _, _ := loadLocalConfig(abs+".toml", loadLenient)
 	mc := mergeConfig(gl.Configs, lc, filepath.Dir(abs))
 	cb := resolveCacheBase(mc.Global)
@@ -53,26 +52,21 @@ func fmtOne(cwd string, gl cfgLoad, script string) error {
 		return err
 	}
 
-	// split shebang/body
 	body := content
-	shebang := ""
 	if len(body) > 2 && body[0] == '#' && body[1] == '!' {
 		if idx := indexByte(body, '\n'); idx >= 0 {
-			shebang = string(body[:idx])
 			body = body[idx+1:]
 		} else {
 			body = []byte{}
 		}
 	}
 
-	// write temp body in cache dir
 	tmpBody := filepath.Join(cdir, ".fmt-body.go")
 	if err := os.WriteFile(tmpBody, body, 0o644); err != nil {
 		return err
 	}
 	defer func() { _ = os.Remove(tmpBody) }()
 
-	// run formatter on temp body
 	if err := runFormatterOn(tmpBody); err != nil {
 		return fmt.Errorf("fmt: formatter failed for %s: %w", script, err)
 	}
@@ -81,41 +75,28 @@ func fmtOne(cwd string, gl cfgLoad, script string) error {
 		return err
 	}
 
-	// reassemble with normalized shebang (absolute goscripter path)
 	newShebang := desiredShebangAbs()
 	var out bytes.Buffer
 	out.WriteString(newShebang)
 	out.WriteByte('\n')
 	out.Write(formatted)
 
-	// if identical to current file (taking into account existing shebang), skip rewrite
-	var cur bytes.Buffer
-	if shebang == "" {
-		cur.Write(content)
-	} else {
-		cur.WriteString(newShebang)
-		cur.WriteByte('\n')
-		cur.Write(body)
-	}
-	if bytes.Equal(out.Bytes(), cur.Bytes()) {
-		return nil
-	}
-
-	// atomic replace
-	tmp := abs + ".goscripter.fmt.tmp"
-	if err := os.WriteFile(tmp, out.Bytes(), origMode); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, abs); err != nil {
-		_ = os.Remove(tmp)
-		return err
+	cur := append([]byte{}, content...)
+	if !bytes.Equal(out.Bytes(), cur) {
+		tmp := abs + ".goscripter.fmt.tmp"
+		if err := os.WriteFile(tmp, out.Bytes(), origMode); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+		if err := os.Rename(tmp, abs); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
 	}
 	return nil
 }
 
 func CmdFmt(args []string) int {
-	// targets = args (if none, use *.go in CWD)
 	var targets []string
 	if len(args) == 0 {
 		files, _ := filepath.Glob("*.go")
@@ -137,4 +118,13 @@ func CmdFmt(args []string) int {
 		}
 	}
 	return 0
+}
+
+func init() {
+	Register(&Command{
+		Name:    "fmt",
+		Summary: "Format body via cache temp; write back with normalized shebang",
+		Help:    func() { usageFmt(newFmtFlagSet()) },
+		Run:     CmdFmt,
+	})
 }

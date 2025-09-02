@@ -75,7 +75,6 @@ func printDescForScript(script string, cb cacheBase, mc mergedConfig, verbose bo
 		fmt.Println("Binary:        (missing)")
 	}
 
-	// deps snapshot summary
 	if s, err := readDepsSnapshot(dep); err == nil {
 		if s.Fb != nil {
 			fmt.Printf("Deps:          fallback scan (root=%s, files=%d)\n", s.Fb.Root, s.Fb.FileCount)
@@ -92,7 +91,7 @@ func printDescForScript(script string, cb cacheBase, mc mergedConfig, verbose bo
 		fmt.Println("Manifest Path: ", man)
 		fmt.Println("Binary Path:   ", bin)
 		fmt.Println("Deps Path:     ", dep)
-		dec := analyzeCache(abs, cdir, mc.Flags, mc.Env, false /*skipDeps for analysis in ls*/)
+		dec := analyzeCache(abs, cdir, mc.Flags, mc.Env, FalseDefault() /*skipDeps for analysis in ls*/)
 		if dec.rebuild {
 			fmt.Println("Would rebuild: yes")
 			for _, r := range dec.reasons {
@@ -133,7 +132,6 @@ func printDescForScript(script string, cb cacheBase, mc mergedConfig, verbose bo
 			fmt.Println("Deps: (none)")
 		}
 	}
-
 	fmt.Println()
 }
 
@@ -259,4 +257,13 @@ func CmdLs(args []string) int {
 		printDescForScript(f, cb, mc, verbose, depsFlag)
 	}
 	return 0
+}
+
+func init() {
+	Register(&Command{
+		Name:    "ls",
+		Summary: "Show cache/config for CWD (default), explicit files, or --all",
+		Help:    func() { usageLs(newLsFlagSet()) },
+		Run:     CmdLs,
+	})
 }

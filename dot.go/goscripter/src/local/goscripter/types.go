@@ -13,11 +13,11 @@ type Config struct {
 
 	Env struct {
 		GO111MODULE string      `toml:"GO111MODULE"`
-		GOPATH      interface{} `toml:"GOPATH"` // string or []string
+		GOPATH      interface{} `toml:"GOPATH"`
 	} `toml:"env"`
 
 	EnvAppend struct {
-		GOPATH interface{} `toml:"GOPATH"` // string or []string
+		GOPATH interface{} `toml:"GOPATH"`
 	} `toml:"env_append"`
 
 	Build struct {
@@ -40,14 +40,17 @@ type Manifest struct {
 
 type DepsSnapshot struct {
 	Meta struct {
-		GeneratedAt string   `toml:"generated_at"`
-		GoVersion   string   `toml:"goversion"`
-		GOOS        string   `toml:"goos"`
-		GOARCH      string   `toml:"goarch"`
-		GOROOT      string   `toml:"goroot"`
-		GO111MODULE string   `toml:"go111module"`
-		GOPATH      []string `toml:"gopath"`
-		Flags       []string `toml:"flags"`
+		GeneratedAt     string   `toml:"generated_at"`
+		GoVersion       string   `toml:"goversion"`
+		GOOS            string   `toml:"goos"`
+		GOARCH          string   `toml:"goarch"`
+		GOROOT          string   `toml:"goroot"`
+		GO111MODULE     string   `toml:"go111module"`
+		GOPATH          []string `toml:"gopath"`
+		Flags           []string `toml:"flags"`
+		GoscripterPath  string   `toml:"goscripter_path"`
+		GoscripterMTime int64    `toml:"goscripter_mtime"`
+		SnapshotFormat  int      `toml:"snapshot_format"`
 	} `toml:"meta"`
 	Deps []DepEntry   `toml:"dep"`
 	Fb   *FallbackRec `toml:"fallback_scan,omitempty"`
@@ -73,9 +76,9 @@ type mergedEnv struct {
 type mergedConfig struct {
 	Env    mergedEnv
 	Flags  []string
-	Global Config          // includes cache.root
-	Nodeps *bool           // optional preference from config
-	CmdYes map[string]bool // per-command assume-yes
+	Global Config
+	Nodeps *bool
+	CmdYes map[string]bool
 }
 
 type cfgErr struct{ msg string }
@@ -95,7 +98,6 @@ type cfgLoad struct {
 	Errs    []error
 }
 
-// cache decision
 type cacheDecision struct {
 	rebuild   bool
 	reasons   []string
@@ -108,7 +110,6 @@ type cacheDecision struct {
 	buildEnvP string
 }
 
-// go list -deps: minimal struct we need
 type listPkg struct {
 	ImportPath string   `json:"ImportPath"`
 	Dir        string   `json:"Dir"`

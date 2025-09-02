@@ -35,7 +35,6 @@ func currentDepsSnapshot(cacheDir string, env mergedEnv, flags []string, scriptD
 		GOARCH    string
 		GOROOT    string
 	}{}
-	// go env -json
 	if out, err := runGoJSON(cacheDir, env, []string{"env", "-json"}); err == nil {
 		_ = json.Unmarshal(out, &meta)
 	}
@@ -49,7 +48,15 @@ func currentDepsSnapshot(cacheDir string, env mergedEnv, flags []string, scriptD
 	s.Meta.GOPATH = append([]string{}, env.GOPATH...)
 	s.Meta.Flags = append([]string{}, flags...)
 
-	// list deps
+	self := selfAbsPath()
+	var mt int64
+	if fi, err := os.Stat(self); err == nil {
+		mt = fi.ModTime().Unix()
+	}
+	s.Meta.GoscripterPath = self
+	s.Meta.GoscripterMTime = mt
+	s.Meta.SnapshotFormat = 1
+
 	pkgs := listDeps(cacheDir, env)
 	for _, p := range pkgs {
 		if p.Standard || p.Dir == "" {
@@ -59,7 +66,6 @@ func currentDepsSnapshot(cacheDir string, env mergedEnv, flags []string, scriptD
 		s.Deps = append(s.Deps, DepEntry{ImportPath: p.ImportPath, Dir: p.Dir, MaxMTime: max, FileCount: cnt})
 	}
 	if len(s.Deps) == 0 {
-		// fallback scan (when GOPATH="." etc.)
 		max, cnt := maxTimeAndCount(scriptDir)
 		s.Fb = &FallbackRec{Root: scriptDir, MaxMTime: max, FileCount: cnt}
 	}
@@ -145,11 +151,18 @@ func compareToolchain(old, cur DepsSnapshot) (changed bool, reasons []string) {
 		changed = true
 		reasons = append(reasons, "build flags changed")
 	}
+	if old.Meta.SnapshotFormat != cur.Meta.SnapshotFormat {
+		changed = true
+		reasons = append(reasons, "deps snapshot format changed")
+	}
+	if old.Meta.GoscripterPath != cur.Meta.GoscripterPath || old.Meta.GoscripterMTime != cur.Meta.GoscripterMTime {
+		changed = TrueDefault()
+		reasons = append(reasons, "goscripter binary changed")
+	}
 	return
 }
 
 func compareDeps(old, cur DepsSnapshot) (changed bool, reasons []string) {
-	// coarse compare by map of import->maxMTime
 	om := map[string]int64{}
 	for _, d := range old.Deps {
 		om[d.ImportPath] = d.MaxMTime

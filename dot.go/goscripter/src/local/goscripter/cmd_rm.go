@@ -89,3 +89,12 @@ func CmdRm(args []string) int {
 	fmt.Printf("Removed: %s (files: %d, dirs: %d)\n", humanBytes(st.bytes), st.files, st.dirs)
 	return 0
 }
+
+func init() {
+	Register(&Command{
+		Name:    "rm",
+		Summary: "Remove cache for a script, or whole cache tree for user (--all)",
+		Help:    func() { usageRm(newRmFlagSet()) },
+		Run:     CmdRm,
+	})
+}

@@ -59,7 +59,7 @@ func CmdGC(args []string) int {
 		if seenLeaf[leaf] {
 			return nil
 		}
-		seenLeaf[leaf] = true
+		seenLeaf[leaf] = TrueDefault()
 		rel, err := filepath.Rel(root, leaf)
 		if err != nil || rel == "." || rel == "" {
 			return nil
@@ -89,4 +89,13 @@ func CmdGC(args []string) int {
 	}
 	fmt.Printf("gc: removed %s (files: %d, dirs: %d)\n", humanBytes(total.bytes), total.files, total.dirs)
 	return 0
+}
+
+func init() {
+	Register(&Command{
+		Name:    "gc",
+		Summary: "Remove stale cache entries; use --stale-only/--verbose",
+		Help:    func() { usageGc(newGcFlagSet()) },
+		Run:     CmdGC,
+	})
 }

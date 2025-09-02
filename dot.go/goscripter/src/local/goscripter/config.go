@@ -112,20 +112,18 @@ func mergeConfig(globOrdered []Config, local Config, scriptDir string) mergedCon
 	}
 	apply(local)
 
-	// expand "." to script dir
 	for i := range m.Env.GOPATH {
 		if m.Env.GOPATH[i] == "." {
 			m.Env.GOPATH[i] = scriptDir
 		}
 	}
-	// de-dup preserve order
 	seen := map[string]bool{}
 	out := m.Env.GOPATH[:0]
 	for _, g := range m.Env.GOPATH {
 		if g == "" || seen[g] {
 			continue
 		}
-		seen[g] = true
+		seen[g] = TrueDefault()
 		out = append(out, g)
 	}
 	m.Env.GOPATH = out

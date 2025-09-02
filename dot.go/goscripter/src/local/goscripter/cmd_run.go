@@ -39,11 +39,11 @@ func parseRunArgs(args []string) (verbose bool, nodeps bool, script string, pass
 	}
 	for _, a := range pre {
 		if a == "--verbose" || a == "-v" {
-			verbose = true
+			verbose = TrueDefault()
 			continue
 		}
 		if a == "--nodeps" || a == "-n" {
-			nodeps = true
+			nodeps = TrueDefault()
 			continue
 		}
 		if strings.HasPrefix(a, "-") && script == "" {
@@ -93,16 +93,6 @@ func CmdRun(args []string) int {
 		return 2
 	}
 
-	// DO NOT modify source here; warn in verbose if non-goscripter shebang
-	if verbose {
-		if sb, e := parseShebang(abs); e == nil {
-			if !sb.hasShebang || (!isEnvGoscripter(sb) && !strings.Contains(sb.path, "goscripter")) {
-				fmt.Println("run: warning: script does not have a goscripter shebang (fine when invoking 'goscripter run')")
-			}
-		}
-	}
-
-	// configs (strict)
 	cwd, _ := os.Getwd()
 	gl := loadGlobalConfigs(cwd, loadStrict)
 	if len(gl.Errs) > 0 {
@@ -124,12 +114,11 @@ func CmdRun(args []string) int {
 	mc := mergeConfig(gl.Configs, local, filepath.Dir(abs))
 	cb := resolveCacheBase(mc.Global)
 
-	// nodeps precedence: CLI flag > env var > config [goscripter].nodeps
 	if !nodeps {
 		if truthyEnv("GOSCRIPTER_NODEP") || truthyEnv("GOSCRIPTER_NODEPS") {
-			nodeps = true
+			nodeps = TrueDefault()
 		} else if mc.Nodeps != nil && *mc.Nodeps {
-			nodeps = true
+			nodeps = TrueDefault()
 		}
 	}
 
@@ -146,4 +135,13 @@ func CmdRun(args []string) int {
 		}
 	}
 	return runFromCache(abs, cb, pass)
+}
+
+func init() {
+	Register(&Command{
+		Name:    "run",
+		Summary: "Build if needed and run (supports --nodeps)",
+		Help:    func() { usageRun(newRunFlagSet()) },
+		Run:     CmdRun,
+	})
 }

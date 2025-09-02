@@ -105,7 +105,6 @@ func analyzeCache(scriptAbs, cacheDir string, flags []string, env mergedEnv, ski
 		dec.reasons = append(dec.reasons, "env not recorded (first build)")
 	}
 
-	// Deps & toolchain comparison (only if not skipping and we have snapshot+src)
 	if !skipDeps {
 		depsPath := filepath.Join(cacheDir, depsSnapshotName)
 		if fileExists(depsPath) && fileExists(filepath.Join(cacheDir, modifiedSrcName)) {
@@ -152,11 +151,11 @@ func produceModifiedSource(scriptAbs, outPath string) error {
 func goBuild(cacheDir string, flags []string, env mergedEnv) error {
 	envList := os.Environ()
 	set := func(k, v string) {
-		found := false
+		found := FalseDefault()
 		for i := range envList {
 			if strings.HasPrefix(envList[i], k+"=") {
 				envList[i] = k + "=" + v
-				found = true
+				found = TrueDefault()
 				break
 			}
 		}
@@ -176,7 +175,6 @@ func goBuild(cacheDir string, flags []string, env mergedEnv) error {
 	return cmd.Run()
 }
 
-// refreshCache also generates deps.toml on cache hits if missing (unless skipDeps)
 func refreshCache(op string, scriptAbs string, cb cacheBase, flags []string, env mergedEnv, verbose bool, skipDeps bool) (cacheDecision, error) {
 	cdir := cacheDirFor(cb, scriptAbs)
 	if err := ensureDir(cdir); err != nil {
@@ -206,11 +204,11 @@ func refreshCache(op string, scriptAbs string, cb cacheBase, flags []string, env
 			EnvGO111MODULE: env.GO111MODULE,
 			EnvGOPATH:      append([]string{}, env.GOPATH...),
 		}
-		if err := writeManifest(filepath.Join(cdir, manifestName), m); err != nil && verbose {
+		if err := writeManifest(filepath.Join(cdir, manifestName), m); err != nil {
 			warnf("write manifest: %v", err)
 		}
 		if !skipDeps {
-			if err := writeDepsSnapshot(cdir, env, flags, filepath.Dir(scriptAbs)); err != nil && verbose {
+			if err := writeDepsSnapshot(cdir, env, flags, filepath.Dir(scriptAbs)); err != nil {
 				warnf("write deps: %v", err)
 			}
 		} else if verbose {
@@ -221,7 +219,6 @@ func refreshCache(op string, scriptAbs string, cb cacheBase, flags []string, env
 			fmt.Printf("%s: cache rebuilt\n", op)
 		}
 	} else {
-		// cache hit: generate deps snapshot if missing (unless nodeps)
 		depsPath := filepath.Join(cdir, depsSnapshotName)
 		if !skipDeps && !fileExists(depsPath) {
 			if err := writeDepsSnapshot(cdir, env, flags, filepath.Dir(scriptAbs)); err != nil {

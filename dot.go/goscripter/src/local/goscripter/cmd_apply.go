@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 )
 
-// FlagSet constructors + usage printer
 func newApplyFlagSet() *flag.FlagSet {
 	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
 	autoYes := FalseDefault()
@@ -42,7 +41,6 @@ func CmdApply(argv []string) int {
 		return 2
 	}
 
-	// Load configs (strict), merge (for defaults like always_yes), before prompting
 	cwd, _ := os.Getwd()
 	gl := loadGlobalConfigs(cwd, loadStrict)
 	if len(gl.Errs) > 0 {
@@ -64,10 +62,8 @@ func CmdApply(argv []string) int {
 	mc := mergeConfig(gl.Configs, local, filepath.Dir(abs))
 	cb := resolveCacheBase(mc.Global)
 
-	// Effective autoYes: CLI -y overrides config; otherwise consult [cmd.apply].always_yes
 	effYes := autoYes || mc.CmdYes["apply"]
 
-	// Shebang normalize (prompt unless effYes)
 	sb, err := parseShebang(abs)
 	if err != nil {
 		eprintf("apply: %v", err)
@@ -76,11 +72,8 @@ func CmdApply(argv []string) int {
 	want := desiredShebangEnvOrAbsForApply(sb)
 	needShebang := !sb.hasShebang || sb.line != want
 	if needShebang {
-		allowed := effYes || askConfirm(fmt.Sprintf("Add/normalize shebang on %s?", abs), false)
+		allowed := effYes || askConfirm(fmt.Sprintf("Add/normalize shebang on %s?", abs), FalseDefault())
 		if !allowed {
-			if verbose {
-				fmt.Println("apply: shebang unchanged (user declined)")
-			}
 			fmt.Println("apply: skipped")
 			return 0
 		}
@@ -100,7 +93,6 @@ func CmdApply(argv []string) int {
 		fmt.Println("apply: shebang already correct")
 	}
 
-	// Ensure owner-executable if missing (prompt unless effYes)
 	info, err := os.Stat(abs)
 	if err != nil {
 		eprintf("apply: %v", err)
@@ -108,7 +100,7 @@ func CmdApply(argv []string) int {
 	}
 	needsExec := info.Mode().Perm()&0o100 == 0
 	if needsExec {
-		allowed := effYes || askConfirm(fmt.Sprintf("Add owner-exec bit (chmod u+x) on %s?", abs), false)
+		allowed := effYes || askConfirm(fmt.Sprintf("Add owner-exec bit (chmod u+x) on %s?", abs), FalseDefault())
 		if allowed {
 			if err := ensureOwnerExec(abs, verbose); err != nil {
 				eprintf("apply: chmod: %v", err)
@@ -119,8 +111,7 @@ func CmdApply(argv []string) int {
 		}
 	}
 
-	// Refresh cache (no run)
-	if _, err := refreshCache("apply", abs, cb, mc.Flags, mc.Env, verbose, false /*skipDeps*/); err != nil {
+	if _, err := refreshCache("apply", abs, cb, mc.Flags, mc.Env, verbose, FalseDefault() /*skipDeps*/); err != nil {
 		eprintf("apply: %v", err)
 		return 2
 	}
@@ -128,8 +119,15 @@ func CmdApply(argv []string) int {
 	return 0
 }
 
-// FalseDefault returns false; it's here to make flag.Bool calls a bit cleaner.
 func FalseDefault() bool { return false }
+func TrueDefault() bool  { return true }
 
-// TrueDefault returns true; for future use if needed.
-func TrueDefault() bool { return true }
+func init() {
+	Register(&Command{
+		Name:    "apply",
+		Aliases: []string{"update"},
+		Summary: "Add/normalize shebang; ensure u+x; refresh cache (no run)",
+		Help:    func() { usageApply(newApplyFlagSet()) },
+		Run:     CmdApply,
+	})
+}
