@@ -77,7 +77,8 @@ func mergeConfig(globOrdered []Config, local Config, scriptDir string) mergedCon
 			GO111MODULE: defaultGOMODULE,
 			GOPATH:      []string{defaultGOPATH},
 		},
-		CmdYes: map[string]bool{},
+		CmdYes:   map[string]bool{},
+		CmdStrip: map[string]bool{},
 	}
 	apply := func(c Config) {
 		if c.Cache.Root != "" {
@@ -103,6 +104,9 @@ func mergeConfig(globOrdered []Config, local Config, scriptDir string) mergedCon
 				key := strings.ToLower(k)
 				if prefs.AlwaysYes != nil {
 					m.CmdYes[key] = *prefs.AlwaysYes
+				}
+				if prefs.AlwaysStrip != nil {
+					m.CmdStrip[key] = *prefs.AlwaysStrip
 				}
 			}
 		}

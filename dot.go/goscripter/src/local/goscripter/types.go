@@ -3,29 +3,38 @@ package goscripter
 import "time"
 
 type CmdPrefs struct {
-	AlwaysYes *bool `toml:"always_yes"`
+	AlwaysYes   *bool  `toml:"always_yes,omitempty"`
+	AlwaysStrip *bool  `toml:"always_strip,omitempty"`
+	Note        string `toml:"__note,omitempty"`
 }
 
 type Config struct {
+	RootNote string `toml:"__note,omitempty"`
+
 	Cache struct {
 		Root string `toml:"root"`
+		Note string `toml:"__note,omitempty"`
 	} `toml:"cache"`
 
 	Env struct {
 		GO111MODULE string      `toml:"GO111MODULE"`
 		GOPATH      interface{} `toml:"GOPATH"`
+		Note        string      `toml:"__note,omitempty"`
 	} `toml:"env"`
 
 	EnvAppend struct {
 		GOPATH interface{} `toml:"GOPATH"`
+		Note   string      `toml:"__note,omitempty"`
 	} `toml:"env_append"`
 
 	Build struct {
 		Flags []string `toml:"flags"`
+		Note  string   `toml:"__note,omitempty"`
 	} `toml:"build"`
 
 	Goscripter struct {
-		Nodeps *bool `toml:"nodeps"`
+		Nodeps *bool  `toml:"nodeps"`
+		Note   string `toml:"__note,omitempty"`
 	} `toml:"goscripter"`
 
 	Cmd map[string]CmdPrefs `toml:"cmd"`
@@ -74,11 +83,12 @@ type mergedEnv struct {
 	GOPATH      []string
 }
 type mergedConfig struct {
-	Env    mergedEnv
-	Flags  []string
-	Global Config
-	Nodeps *bool
-	CmdYes map[string]bool
+	Env      mergedEnv
+	Flags    []string
+	Global   Config
+	Nodeps   *bool
+	CmdYes   map[string]bool
+	CmdStrip map[string]bool
 }
 
 type cfgErr struct{ msg string }

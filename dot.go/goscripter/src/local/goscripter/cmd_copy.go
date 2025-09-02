@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ func newCopyFlagSet() *flag.FlagSet {
 	uid := -1
 	gid := -1
 	mode := ""
+	strip := FalseDefault()
 	fs.BoolVar(&verbose, "verbose", FalseDefault(), "verbose output")
 	fs.BoolVar(&verbose, "v", FalseDefault(), "verbose output (short)")
 	fs.BoolVar(&force, "force", FalseDefault(), "overwrite existing destination file")
@@ -26,6 +28,7 @@ func newCopyFlagSet() *flag.FlagSet {
 	fs.IntVar(&uid, "uid", -1, "set destination file owner UID (requires privileges)")
 	fs.IntVar(&gid, "gid", -1, "set destination file group GID (requires privileges)")
 	fs.StringVar(&mode, "mode", "", "set destination file mode (octal, e.g. 0755)")
+	fs.BoolVar(&strip, "strip", FalseDefault(), "strip the destination binary after copy")
 	fs.Usage = func() { usageCopy(fs) }
 	return fs
 }
@@ -38,6 +41,7 @@ func CmdCopy(args []string) int {
 	uid := -1
 	gid := -1
 	mode := ""
+	strip := FalseDefault()
 	fs.BoolVar(&verbose, "verbose", FalseDefault(), "verbose output")
 	fs.BoolVar(&verbose, "v", FalseDefault(), "verbose output (short)")
 	fs.BoolVar(&force, "force", FalseDefault(), "overwrite existing destination file")
@@ -46,6 +50,7 @@ func CmdCopy(args []string) int {
 	fs.IntVar(&uid, "uid", -1, "set destination file owner UID (requires privileges)")
 	fs.IntVar(&gid, "gid", -1, "set destination file group GID (requires privileges)")
 	fs.StringVar(&mode, "mode", "", "set destination file mode (octal, e.g. 0755)")
+	fs.BoolVar(&strip, "strip", FalseDefault(), "strip the destination binary after copy")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -164,6 +169,24 @@ func CmdCopy(args []string) int {
 		if err := os.Chown(toPath, uid, gid); err != nil {
 			eprintf("copy: chown %s to uid=%d gid=%d failed: %v", toPath, uid, gid, err)
 			return 2
+		}
+	}
+
+	// Decide if we should strip
+	doStrip := strip || mc.CmdStrip["copy"]
+	if doStrip {
+		if _, err := exec.LookPath("strip"); err == nil {
+			cmd := exec.Command("strip", toPath)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if e := cmd.Run(); e != nil {
+				warnf("copy: strip failed: %v", e)
+			}
+			if verbose {
+				fmt.Println("copy: stripped", toPath)
+			}
+		} else if verbose {
+			warnf("copy: 'strip' tool not found; skipping strip")
 		}
 	}
 

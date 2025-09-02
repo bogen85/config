@@ -1,5 +1,0 @@
-[build]
-flags = ["-ldflags=-s -w", "-trimpath"]
-
-[env_append]
-GOPATH = "."

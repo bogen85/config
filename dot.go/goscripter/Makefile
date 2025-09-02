@@ -1,7 +1,7 @@
 
 # Build in GOPATH mode; import path is local/goscripter.
 # We add PWD to GOPATH so src/local/goscripter is discoverable.
-BINARY := goscripter
+BINARY := goscripter.exe
 
 .PHONY: default build clean checksums verify fmt install
 
@@ -33,4 +33,13 @@ fmt:
 	@for i in $$(find . -name '*.go'); do echo [$$i]; go fmt $$i; done
 
 install: build
-	cp -v $(BINARY) $(HOME)/bin/$(BINARY)
+	cp -v $(BINARY) $(HOME)/bin/goscripter
+
+_install:
+	goscripter install --verbose --strip --force main.go ~/bin/goscripter
+
+_clean:
+	goscripter rm --verbose main.go
+
+_run:
+	goscripter run --verbose main.go

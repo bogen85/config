@@ -1,3 +1,4 @@
+#!/home/dwight/bin/goscripter run
 package main
 
 import (

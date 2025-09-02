@@ -32,10 +32,8 @@ func homeDir() string {
 type cacheBase struct{ Root string }
 
 func resolveCacheBase(cfg Config) cacheBase {
-	// Default: ~/.cache/goscripter
 	root := filepath.Join(homeDir(), ".cache", "goscripter")
 	if cfg.Cache.Root != "" {
-		// If override provided, follow "/<override>/goscripter/$USER/**" rule
 		user := os.Getenv("USER")
 		if user == "" {
 			user = "user"
@@ -101,7 +99,6 @@ func selfAbsPath() string {
 	if err != nil {
 		return ""
 	}
-	// resolve symlinks
 	if rp, err := filepath.EvalSymlinks(p); err == nil {
 		return rp
 	}
@@ -131,7 +128,6 @@ func sameFile(a, b string) bool {
 }
 
 func desiredShebangAbs() string {
-	// Prefer the actual executing binary; fallback to a reasonable default
 	self := selfAbsPath()
 	if self == "" {
 		if runtime.GOOS == "linux" {
@@ -144,7 +140,6 @@ func desiredShebangAbs() string {
 }
 
 func desiredShebangEnvOrAbsForApply(sb shebangInfo) string {
-	// If existing shebang uses env and it resolves to this binary, keep env form.
 	if isEnvGoscripter(sb) {
 		envPath := lookPathGoscripter()
 		if envPath != "" && sameFile(envPath, selfAbsPath()) {

@@ -1,0 +1,23 @@
+__note = "Script-local settings for this Go script."
+
+[env]
+GO111MODULE = "auto"
+#GOPATH = "/usr/share/gocode"
+
+[env_append]
+GOPATH = "."
+__note = "Add the script's directory to GOPATH at runtime."
+
+[build]
+flags = ["-trimpath","-ldflags=-s -w"]
+
+[goscripter]
+nodeps = false
+
+[cmd.apply]
+always_yes = false
+__note = "Set to true to skip confirm prompts for apply."
+
+[cmd.copy]
+always_strip = false
+__note = "Set to true to strip binaries on copy by default."
