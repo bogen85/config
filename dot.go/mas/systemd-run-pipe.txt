@@ -1,0 +1,1 @@
+use pipe when not using pty: sudo systemd-run --same-dir --pipe --quiet --uid=dwight ls .
