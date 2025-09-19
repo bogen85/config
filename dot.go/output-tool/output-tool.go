@@ -9,8 +9,63 @@ import (
 	"strconv"
 	"unicode/utf8"
 
+	"github.com/BurntSushi/toml"
 	"github.com/gdamore/tcell/v2"
 )
+
+type ColorPair struct {
+	FG string `toml:"fg"`
+	BG string `toml:"bg"`
+}
+
+type Config struct {
+	Colors struct {
+		Normal          ColorPair `toml:"normal"`
+		Highlight       ColorPair `toml:"highlight"`
+		Gutter          ColorPair `toml:"gutter"`
+		GutterHighlight ColorPair `toml:"gutter_highlight"`
+		Status          ColorPair `toml:"status"`
+	} `toml:"colors"`
+}
+
+func defaultConfig() Config {
+	var c Config
+	c.Colors.Normal = ColorPair{FG: "white", BG: "black"}
+	c.Colors.Highlight = ColorPair{FG: "black", BG: "white"}
+	c.Colors.Gutter = ColorPair{FG: "gray", BG: "black"}
+	c.Colors.GutterHighlight = ColorPair{FG: "black", BG: "white"}
+	c.Colors.Status = ColorPair{FG: "black", BG: "yellow"}
+	return c
+}
+
+func writeDefaultConfig(path string) error {
+	cfg := defaultConfig()
+	if path == "" {
+		// stdout
+		return toml.NewEncoder(os.Stdout).Encode(cfg)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return toml.NewEncoder(f).Encode(cfg)
+}
+
+func loadConfig(path string) (Config, error) {
+	cfg := defaultConfig()
+	if path == "" {
+		return cfg, nil
+	}
+	_, err := toml.DecodeFile(path, &cfg)
+	return cfg, err
+}
+
+func styleFrom(p ColorPair) tcell.Style {
+	fg := tcell.GetColor(p.FG)
+	bg := tcell.GetColor(p.BG)
+	return tcell.StyleDefault.Foreground(fg).Background(bg)
+}
 
 func readLines(path string) ([]string, error) {
 	f, err := os.Open(path)
@@ -62,10 +117,25 @@ func digits(n int) int {
 
 func main() {
 	filePath := flag.String("file", "", "path to a UTF-8 text file (one entry per line)")
+	configPath := flag.String("config", "", "path to a config TOML (colors)")
+	outputDefault := flag.Bool("output-default-config", false, "print or write a default config TOML and exit")
 	flag.Parse()
 
+	// If --output-default-config, disallow --file.
+	if *outputDefault {
+		if *filePath != "" {
+			fmt.Fprintln(os.Stderr, "error: --file cannot be used with --output-default-config")
+			os.Exit(2)
+		}
+		if err := writeDefaultConfig(*configPath); err != nil {
+			log.Fatalf("failed to write default config: %v", err)
+		}
+		return
+	}
+
+	// Normal run: need --file
 	if *filePath == "" {
-		fmt.Fprintln(os.Stderr, "error: --file is required")
+		fmt.Fprintln(os.Stderr, "error: --file is required (or use --output-default-config)")
 		os.Exit(2)
 	}
 
@@ -77,6 +147,11 @@ func main() {
 		return
 	}
 
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
+	}
+
 	s, err := tcell.NewScreen()
 	if err != nil {
 		log.Fatalf("tcell.NewScreen: %v", err)
@@ -84,25 +159,24 @@ func main() {
 	if err = s.Init(); err != nil {
 		log.Fatalf("screen.Init: %v", err)
 	}
-	// We'll call s.Fini() explicitly at exit before printing.
+	// We'll call s.Fini() explicitly before printing the result.
 
-	def := tcell.StyleDefault
-	normal := def.Foreground(tcell.ColorWhite).Background(tcell.ColorBlack)
-	highlight := def.Foreground(tcell.ColorBlack).Background(tcell.ColorWhite)
-	gutterStyle := def.Foreground(tcell.ColorGray).Background(tcell.ColorBlack)
-	gutterHLStyle := def.Foreground(tcell.ColorBlack).Background(tcell.ColorWhite)
-	statusStyle := def.Foreground(tcell.ColorBlack).Background(tcell.ColorYellow) // status bar
+	normal := styleFrom(cfg.Colors.Normal)
+	highlight := styleFrom(cfg.Colors.Highlight)
+	gutterStyle := styleFrom(cfg.Colors.Gutter)
+	gutterHLStyle := styleFrom(cfg.Colors.GutterHighlight)
+	statusStyle := styleFrom(cfg.Colors.Status)
 
 	cursor := 0
 	offset := 0
 	selected := ""
-	lnWidth := digits(len(lines))         // width for line numbers
-	gutterWidth := lnWidth + 2            // e.g., "  12: "
-	contentLeft := gutterWidth            // text area starts after gutter
+	lnWidth := digits(len(lines)) // line number width
+	gutterWidth := lnWidth + 2    // "NN: "
+	contentLeft := gutterWidth
 
 	ensureCursorVisible := func() {
 		_, h := s.Size()
-		usable := max(0, h-1) // bottom row reserved for status bar
+		usable := max(0, h-1) // bottom row = status bar
 		if cursor < offset {
 			offset = cursor
 		} else if cursor >= offset+usable {
@@ -138,11 +212,10 @@ func main() {
 		w, h := s.Size()
 		usable := max(0, h-1)
 
-		// Draw content rows
+		// Content
 		for row := 0; row < usable; row++ {
 			i := offset + row
 			if i >= len(lines) {
-				// clear empty rows with normal bg
 				fillRow(row, normal)
 				continue
 			}
@@ -155,8 +228,9 @@ func main() {
 				gutStyle = gutterHLStyle
 			}
 
-			// Gutter: right-aligned line number + ": "
-			fillRow(row, rowStyle) // ensure background spans full width for highlight
+			fillRow(row, rowStyle)
+
+			// Gutter: right-aligned number + ": "
 			numStr := strconv.Itoa(i + 1)
 			pad := lnWidth - len(numStr)
 			x := 0
@@ -167,15 +241,14 @@ func main() {
 			x += putStr(x, row, gutStyle, numStr, -1)
 			x += putStr(x, row, gutStyle, ": ", -1)
 
-			// Content text, truncated to available width
+			// Line content
 			avail := max(0, w-contentLeft)
 			if avail > 0 {
 				putStr(contentLeft, row, rowStyle, lines[i], avail)
 			}
-			// Remaining cells already filled by fillRow(row, rowStyle)
 		}
 
-		// Draw status bar (bottom row)
+		// Status bar
 		if h > 0 {
 			statusRow := h - 1
 			fillRow(statusRow, statusStyle)
@@ -206,7 +279,7 @@ loop:
 				selected = lines[cursor]
 				break loop
 			case tcell.KeyEscape:
-				selected = "" // explicit: cancel
+				selected = ""
 				break loop
 			case tcell.KeyUp:
 				if cursor > 0 {
@@ -262,9 +335,8 @@ loop:
 		}
 	}
 
-	// Restore the original screen *before* printing so the line shows up in the normal buffer.
+	// Restore terminal before printing result.
 	s.Fini()
-
 	if selected != "" {
 		fmt.Println(selected)
 	}
