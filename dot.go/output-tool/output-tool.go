@@ -44,15 +44,16 @@ type Rule struct {
 type Config struct {
 	// Global action on Enter inside TUI: "print" or "spawn"
 	Action  string   `toml:"action"`
-	Command []string `toml:"command"` // argv, supports ${VAR} expansion and "<path>" token
+	Command []string `toml:"command"` // argv, supports ${VAR} and "<path>"
 
 	Colors struct {
 		Normal          ColorPair `toml:"normal"`
 		Highlight       ColorPair `toml:"highlight"`
 		Gutter          ColorPair `toml:"gutter"`
 		GutterHighlight ColorPair `toml:"gutter_highlight"`
-		Status          ColorPair `toml:"status"`     // bottom bar
+		Status          ColorPair `toml:"status"`     // bottom status bar
 		TopStatus       ColorPair `toml:"top_status"` // top bar
+		ErrPanel        ColorPair `toml:"err_panel"`  // error panel bg/fg
 	} `toml:"colors"`
 	Rules []Rule `toml:"rules"`
 }
@@ -70,6 +71,7 @@ func defaultConfig() Config {
 	c.Colors.GutterHighlight = ColorPair{FG: "black", BG: "white"}
 	c.Colors.Status = ColorPair{FG: "#000000", BG: "#ffff00"}    // bottom
 	c.Colors.TopStatus = ColorPair{FG: "#000000", BG: "#ff00ff"} // top
+	c.Colors.ErrPanel = ColorPair{FG: "#ffffff", BG: "#303030"}  // error window
 
 	// Default rule: POSIX-ish path:line:col
 	c.Rules = []Rule{
@@ -84,7 +86,7 @@ func defaultConfig() Config {
 }
 
 /* =========================
-   Flags (includes pipe/NDJSON)
+   Flags (includes pipe/NDJSON and err panel)
    ========================= */
 
 var (
@@ -98,6 +100,7 @@ var (
 	flagJSONMatches   = flag.Bool("json-matches", false, "emit NDJSON records for each matching line (pre-TUI/quasi-print)")
 	flagJSONDest      = flag.String("json-dest", "stderr", "destination for NDJSON: stderr|stdout|/path/to/file")
 	flagNoTUI         = flag.Bool("no-tui", false, "when emitting NDJSON, skip opening the TUI and exit")
+	flagErrLines      = flag.Int("err-lines", 5, "number of lines in bottom error panel (0 to disable)")
 )
 
 /* =========================
@@ -158,7 +161,6 @@ func styleFrom(p ColorPair) tcell.Style {
 		Foreground(parseColor(p.FG)).
 		Background(parseColor(p.BG))
 }
-
 func invertStyle(p ColorPair) tcell.Style {
 	return tcell.StyleDefault.
 		Foreground(parseColor(p.BG)).
@@ -453,7 +455,7 @@ func buildLineInfo(line string, rules []compiledRule) lineInfo {
 		li.spans = append(li.spans, matchSpan{start: i, end: j, rule: rule})
 		i = j
 	}
-	return li crap
+	return li
 }
 
 type preScan struct {
@@ -520,13 +522,10 @@ type Output struct {
 type activeMsg struct {
 	Idx    int
 	Active bool
-	ErrMsg string // optional transient error to show
+	ErrMsg string // for error panel
 }
 
-func expandArg(s string) string {
-	return os.Expand(s, func(k string) string { return os.Getenv(k) })
-}
-
+func expandArg(s string) string   { return os.Expand(s, func(k string) string { return os.Getenv(k) }) }
 func expandArgs(argv []string, fifoPath string) []string {
 	out := make([]string, 0, len(argv))
 	for _, a := range argv {
@@ -540,7 +539,6 @@ func expandArgs(argv []string, fifoPath string) []string {
 func fifoRoot() string {
 	return filepath.Join(os.TempDir(), "output-tool", fmt.Sprintf("%d", os.Getpid()))
 }
-
 func makeFIFO() (string, error) {
 	root := fifoRoot()
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -554,10 +552,10 @@ func makeFIFO() (string, error) {
 }
 
 /* =========================
-   UI with rules (+ spawn)
+   UI with rules (+ spawn + error panel)
    ========================= */
 
-func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []ColorPair) (string, []string, int, bool, int, int) {
+func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []ColorPair, errLines int, errPanel *[]string) (string, []string, int, bool, int, int) {
 	lines := ps.lines
 	info := ps.info
 	matchLines := ps.matchLines
@@ -586,6 +584,19 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 	gutterHLStyle := styleFrom(cfg.Colors.GutterHighlight)
 	statusStyle := styleFrom(cfg.Colors.Status)
 	topStyle := styleFrom(cfg.Colors.TopStatus)
+	errStyle := styleFrom(cfg.Colors.ErrPanel)
+
+	// Error panel buffer & helper
+	if errPanel == nil {
+		tmp := []string{}
+		errPanel = &tmp
+	}
+	addErr := func(msg string) {
+		*errPanel = append(*errPanel, msg)
+		fmt.Fprintln(os.Stderr, msg) // also to stderr live
+		// trigger redraw
+		s.PostEvent(tcell.NewEventInterrupt(nil))
+	}
 
 	// Navigation
 	cursor := 0
@@ -596,16 +607,14 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 
 	// Spawn/active tracking
 	active := map[int]bool{}
-	lastErr := "" // transient message for status bar
 
 	// Helper to post UI wakeups from goroutines
-	post := func(msg activeMsg) {
-		s.PostEvent(tcell.NewEventInterrupt(msg))
-	}
+	post := func(msg activeMsg) { s.PostEvent(tcell.NewEventInterrupt(msg)) }
 
 	ensureCursorVisible := func() {
+		//w
 		_, h := s.Size()
-		usable := max(0, h-2) // top+bottom bars
+		usable := max(0, h-2- max(0, errLines)) // top + status + err lines
 		if cursor < offset {
 			offset = cursor
 		} else if cursor >= offset+usable {
@@ -665,9 +674,8 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		if cfg.Action != "spawn" {
 			return
 		}
-		// block re-run while active
 		if active[idx] {
-			post(activeMsg{Idx: idx, Active: true, ErrMsg: "already active"})
+			addErr(fmt.Sprintf("line %d already active", idx+1))
 			return
 		}
 
@@ -682,13 +690,13 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		// Create FIFO
 		fifo, err := makeFIFO()
 		if err != nil {
-			post(activeMsg{Idx: idx, Active: false, ErrMsg: "mkfifo failed: " + err.Error()})
+			addErr("mkfifo failed: " + err.Error())
 			return
 		}
 
 		// Build argv
 		if len(cfg.Command) == 0 {
-			post(activeMsg{Idx: idx, Active: false, ErrMsg: "config.command is empty"})
+			addErr("config.command is empty")
 			_ = os.Remove(fifo)
 			return
 		}
@@ -698,7 +706,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		cmd := exec.Command(argv[0], argv[1:]...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if err := cmd.Start(); err != nil {
-			post(activeMsg{Idx: idx, Active: false, ErrMsg: "spawn failed: " + err.Error()})
+			addErr("spawn failed: " + err.Error())
 			_ = os.Remove(fifo)
 			return
 		}
@@ -725,29 +733,26 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 			var f *os.File
 			select {
 			case f = <-openCh:
-				// Reader is present; unlink immediately so no crumbs remain
-				_ = os.Remove(fifoPath)
+				_ = os.Remove(fifoPath) // unlink immediately
 			case err := <-errCh:
-				post(activeMsg{Idx: lineIdx, Active: false, ErrMsg: "open fifo failed: " + err.Error()})
+				addErr("open fifo failed: " + err.Error())
 				_ = os.Remove(fifoPath)
 				active[lineIdx] = false
 				post(activeMsg{Idx: lineIdx, Active: false})
 				return
 			case <-time.After(10 * time.Second):
-				post(activeMsg{Idx: lineIdx, Active: false, ErrMsg: "reader timeout"})
+				addErr(fmt.Sprintf("reader timeout for line %d", lineIdx+1))
 				_ = os.Remove(fifoPath)
 				active[lineIdx] = false
 				post(activeMsg{Idx: lineIdx, Active: false})
 				return
 			}
 
-			// Write JSON
 			enc := json.NewEncoder(f)
 			enc.SetEscapeHTML(false)
 			_ = enc.Encode(payload)
 			_ = f.Close()
 
-			// Done
 			active[lineIdx] = false
 			post(activeMsg{Idx: lineIdx, Active: false})
 		}(idx, fifo, rec)
@@ -804,10 +809,12 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 			st := rowStyle
 			if curSpan != nil && rStart >= curSpan.start && rStart < curSpan.end {
 				ri := li.spans[spanIdx].rule
-				if isSel {
-					st = invertStyle(rulePairs[ri])
-				} else {
-					st = styleFrom(rulePairs[ri])
+				if ri >= 0 && ri < len(rulePairs) {
+					if isSel {
+						st = invertStyle(rulePairs[ri])
+					} else {
+						st = styleFrom(rulePairs[ri])
+					}
 				}
 			}
 			s.SetContent(col, rowY, r, nil, st)
@@ -815,12 +822,11 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		}
 	}
 
-	// Active list as a compact string
+	// Active list compact string
 	activeList := func(cur int) string {
 		if len(active) == 0 {
 			return ""
 		}
-		// collect keys
 		items := make([]int, 0, len(active))
 		for k, v := range active {
 			if v {
@@ -830,14 +836,12 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		if len(items) == 0 {
 			return ""
 		}
-		// sort-ish order not required; keep insertion-order feel
-		// Build display list; cap to ~8 entries
 		b := &strings.Builder{}
 		b.WriteString("  active:")
 		count := 0
 		for _, idx := range items {
 			if count >= 8 {
-				b.WriteString(fmt.Sprintf(" …(+%d)", len(items)-count))
+				fmt.Fprintf(b, " …(+%d)", len(items)-count)
 				break
 			}
 			if idx == cur {
@@ -860,7 +864,8 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 			s.Show()
 			return
 		}
-		usable := max(0, h-2)
+		errH := max(0, errLines)
+		usable := max(0, h-2-errH) // top + status + err panel
 
 		// Top bar
 		fillRow(0, topStyle)
@@ -878,16 +883,34 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 			drawContentLine(1+row, i, w, i == cursor)
 		}
 
-		// Bottom bar
+		// Error panel (last errH rows above status)
+		if errH > 0 {
+			startY := 1 + usable
+			for i := 0; i < errH; i++ {
+				fillRow(startY+i, errStyle)
+			}
+			// show last errLines messages
+			msgs := *errPanel
+			n := len(msgs)
+			first := n - errH
+			if first < 0 {
+				first = 0
+			}
+			y := startY
+			for i := first; i < n; i++ {
+				putStr(0, y, errStyle, msgs[i], -1)
+				y++
+			}
+		}
+
+		// Bottom status bar
 		statusRow := h - 1
 		fillRow(statusRow, statusStyle)
-		lineNum := cursor + 1
+		lineNum := clamp(cursor+1, 1, len(lines))
 		charCount := utf8.RuneCountInString(lines[cursor])
+		actionLabel := map[bool]string{true: "spawn", false: "select"}[cfg.Action == "spawn"]
 		status := fmt.Sprintf(" %d/%d  |  chars: %d  |  ↑/↓ PgUp/PgDn Home/End  Enter=%s  q/Esc=quit ",
-			lineNum, len(lines), charCount, map[bool]string{true: "spawn", false: "select"}[cfg.Action == "spawn"])
-		if lastErr != "" {
-			status += "  ⚠ " + lastErr
-		}
+			lineNum, len(lines), charCount, actionLabel)
 		putStr(0, statusRow, statusStyle, status, -1)
 
 		s.Show()
@@ -900,25 +923,9 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		ev := s.PollEvent()
 		switch e := ev.(type) {
 		case *tcell.EventInterrupt:
-			// payload from goroutines
-			if msg, ok := e.Data().(activeMsg); ok {
-				if msg.ErrMsg != "" {
-					lastErr = msg.ErrMsg
-					// Clear after short time via redraw trigger from timer goroutine
-					go func() {
-						time.Sleep(1500 * time.Millisecond)
-						if lastErr == msg.ErrMsg {
-							lastErr = ""
-							post(activeMsg{}) // trigger redraw
-						}
-					}()
-				}
-				if msg.Idx >= 0 {
-					active[msg.Idx] = msg.Active
-				}
-				ensureCursorVisible()
-				draw()
-			}
+			// redraw triggers/messages already appended to errPanel
+			ensureCursorVisible()
+			draw()
 		case *tcell.EventResize:
 			s.Sync()
 			ensureCursorVisible()
@@ -950,13 +957,15 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 				}
 			case tcell.KeyPgUp:
 				_, h := s.Size()
-				usable := max(0, h-2)
+				errH := max(0, errLines)
+				usable := max(0, h-2-errH)
 				cursor = clamp(cursor-usable, 0, len(lines)-1)
 				ensureCursorVisible()
 				draw()
 			case tcell.KeyPgDn:
 				_, h := s.Size()
-				usable := max(0, h-2)
+				errH := max(0, errLines)
+				usable := max(0, h-2-errH)
 				cursor = clamp(cursor+usable, 0, len(lines)-1)
 				ensureCursorVisible()
 				draw()
@@ -1004,9 +1013,9 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
    PIPE mode (stdin streaming)
    ========================= */
 
-func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, onlyOnMatches bool, noTUI bool) error {
+func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, onlyOnMatches bool, noTUI bool, errLines int) error {
 	// Compile rules once
-	cRules, _ := compileRules(cfg)
+	cRules, rulePairs := compileRules(cfg)
 
 	// Temp dir/file for captured stream
 	root := filepath.Join(os.TempDir(), "output-tool", fmt.Sprintf("%d", os.Getpid()))
@@ -1121,11 +1130,35 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 		return nil
 	}
 
-	// Open TUI
+	// Open TUI and honor Enter in print mode
 	src := SourceInfo{Kind: "pipe"}
-	_, _, _, ok, _, _ := runListUIWithRules(ps, cfg, src, nil)
-	// In spawn mode, Enter does not exit; q/Esc exits. In print mode we don't print here for --pipe.
-	_ = ok
+	var panel []string
+	lineText, matches, lineNum, ok, _, _ := runListUIWithRules(ps, cfg, src, rulePairs, errLines, &panel)
+
+	// Reprint error panel after exit so you see it on the real screen
+	if len(panel) > 0 {
+		fmt.Fprintln(os.Stderr, "--- output-tool messages ---")
+		for _, m := range panel {
+			fmt.Fprintln(os.Stderr, m)
+		}
+	}
+
+	if cfg.Action == "print" {
+		var out Output
+		out.Source = src
+		if ok {
+			out.Line = strings.TrimRightFunc(lineText, func(r rune) bool { return r == '\r' })
+			out.Matches = matches
+			out.LineNumber = lineNum
+		} else {
+			out.Line = ""
+			out.Matches = []string{}
+			out.LineNumber = 0
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetEscapeHTML(false)
+		_ = enc.Encode(out)
+	}
 	return nil
 }
 
@@ -1209,7 +1242,7 @@ func main() {
 
 	// PIPE MODE
 	if *flagPipe {
-		if err := runPipeMode(cfg, isTTYOut, *flagJSONMatches, *flagJSONDest, *flagOnlyOnMatches, *flagNoTUI); err != nil {
+		if err := runPipeMode(cfg, isTTYOut, *flagJSONMatches, *flagJSONDest, *flagOnlyOnMatches, *flagNoTUI, *flagErrLines); err != nil {
 			log.Fatalf("pipe mode error: %v", err)
 		}
 		return
@@ -1293,7 +1326,16 @@ func main() {
 	}
 
 	// Open TUI
-	lineText, matches, lineNum, ok, _, _ := runListUIWithRules(ps, cfg, source, rulePairs)
+	var panel []string
+	lineText, matches, lineNum, ok, _, _ := runListUIWithRules(ps, cfg, source, rulePairs, *flagErrLines, &panel)
+
+	// Reprint error panel after exit
+	if len(panel) > 0 {
+		fmt.Fprintln(os.Stderr, "--- output-tool messages ---")
+		for _, m := range panel {
+			fmt.Fprintln(os.Stderr, m)
+		}
+	}
 
 	// Print selection JSON only in print mode
 	if cfg.Action == "print" {
