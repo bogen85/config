@@ -41,24 +41,25 @@ type Config struct {
 		Highlight       ColorPair `toml:"highlight"`
 		Gutter          ColorPair `toml:"gutter"`
 		GutterHighlight ColorPair `toml:"gutter_highlight"`
-		Status          ColorPair `toml:"status"`      // bottom bar
-		TopStatus       ColorPair `toml:"top_status"`  // NEW top bar
+		Status          ColorPair `toml:"status"`     // bottom bar
+		TopStatus       ColorPair `toml:"top_status"` // top bar
 	} `toml:"colors"`
 	Rules []Rule `toml:"rules"`
 }
 
 func defaultConfig() Config {
 	var c Config
-	// Base UI colors
+	// Keep these as named colors (theme-friendly, but mapped by tcell to RGB in rich terms)
 	c.Colors.Normal = ColorPair{FG: "white", BG: "black"}
 	c.Colors.Highlight = ColorPair{FG: "black", BG: "white"}
 	c.Colors.Gutter = ColorPair{FG: "gray", BG: "black"}
 	c.Colors.GutterHighlight = ColorPair{FG: "black", BG: "white"}
-	c.Colors.Status = ColorPair{FG: "black", BG: "yellow"}     // bottom bar
-	c.Colors.TopStatus = ColorPair{FG: "black", BG: "magenta"} // top bar (new)
 
-	// One default rule: path:line:col (e.g., old/0/file.go:10:2)
-	// Note: kept POSIX-y; we can extend for Windows later if you want.
+	// Use hex for status bars for predictable results on rich terminals
+	c.Colors.Status = ColorPair{FG: "#000000", BG: "#ffff00"}     // bottom: black on yellow
+	c.Colors.TopStatus = ColorPair{FG: "#000000", BG: "#ff00ff"}  // top: black on magenta
+
+	// Default rule: path:line:col (POSIX-ish)
 	c.Rules = []Rule{
 		{
 			Name:  "path:line:col",
@@ -71,17 +72,40 @@ func defaultConfig() Config {
 }
 
 /* =========================
-   Small helpers
+   Color parsing
    ========================= */
 
+func parseColor(s string) tcell.Color {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return tcell.ColorReset
+	}
+	// Explicit 256-palette entry: palette:NN (0..255)
+	if strings.HasPrefix(s, "palette:") {
+		nStr := strings.TrimPrefix(s, "palette:")
+		if n, err := strconv.Atoi(nStr); err == nil && n >= 0 && n <= 255 {
+			return tcell.PaletteColor(n)
+		}
+	}
+	// tcell.GetColor supports #rrggbb and many HTML/X11 names
+	return tcell.GetColor(s)
+}
+
 func styleFrom(p ColorPair) tcell.Style {
-	return tcell.StyleDefault.Foreground(tcell.GetColor(p.FG)).Background(tcell.GetColor(p.BG))
+	return tcell.StyleDefault.
+		Foreground(parseColor(p.FG)).
+		Background(parseColor(p.BG))
 }
 
 func invertStyle(p ColorPair) tcell.Style {
-	// swap fg/bg
-	return tcell.StyleDefault.Foreground(tcell.GetColor(p.BG)).Background(tcell.GetColor(p.FG))
+	return tcell.StyleDefault.
+		Foreground(parseColor(p.BG)).
+		Background(parseColor(p.FG))
 }
+
+/* =========================
+   Small helpers
+   ========================= */
 
 func digits(n int) int {
 	if n <= 0 {
@@ -144,10 +168,10 @@ func readPrimaryWithXclip() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading PRIMARY via xclip failed: %w", err)
 	}
-	// Clear PRIMARY by setting empty input
+	// Clear PRIMARY
 	cmd := exec.Command("xclip", "-selection", "primary", "-in")
 	cmd.Stdin = bytes.NewReader(nil)
-	_ = cmd.Run() // best-effort
+	_ = cmd.Run() // best effort
 	return string(out), nil
 }
 
@@ -304,21 +328,21 @@ func confirmOverwriteDialog(target string) bool {
    ========================= */
 
 type compiledRule struct {
-	re        *regexp.Regexp
-	style     tcell.Style
-	styleInv  tcell.Style // for selected row (inverted)
-	name      string
+	re       *regexp.Regexp
+	style    tcell.Style
+	styleInv tcell.Style // for selected row (inverted)
+	name     string
 }
 
 type matchSpan struct {
-	start int // byte offsets in the line
+	start int // byte offsets
 	end   int
 	rule  int // index into compiledRules
 }
 
 type lineInfo struct {
-	spans       []matchSpan // sorted by start; later rules can overwrite earlier (see buildSpans)
-	matchesText []string    // exact substrings for output
+	spans       []matchSpan // merged, non-overlapping paint spans
+	matchesText []string    // all raw match texts (includes overlaps)
 }
 
 func compileRules(cfg Config) []compiledRule {
@@ -344,15 +368,12 @@ func compileRules(cfg Config) []compiledRule {
 	return cr
 }
 
-// buildLineInfo finds matches for all rules, in config order.
-// Overlaps: later rules override earlier visually; for matches text array, include ALL matches.
 func buildLineInfo(line string, rules []compiledRule) lineInfo {
 	var li lineInfo
 	if len(rules) == 0 || len(line) == 0 {
 		return li
 	}
 
-	// First collect all spans with their rule index
 	type rawSpan struct {
 		start, end, rule int
 	}
@@ -364,16 +385,11 @@ func buildLineInfo(line string, rules []compiledRule) lineInfo {
 			li.matchesText = append(li.matchesText, line[p[0]:p[1]])
 		}
 	}
-
 	if len(raw) == 0 {
 		return li
 	}
 
-	// Sort by start, then by rule order (earlier first). We'll resolve overlaps by "last wins".
-	// Simple insertion: we'll build a coverage by walking bytes and remembering the last-applied rule.
-	// For rendering, we need non-overlapping merged spans with final rule assignment.
-
-	// Build a per-byte "owner" table (cheap for typical short lines; if you want, we can optimize later).
+	// "Last rule wins" for overlapping paint. Build per-byte owner map.
 	b := []byte(line)
 	owner := make([]int, len(b)) // -1 = none
 	for i := range owner {
@@ -390,11 +406,10 @@ func buildLineInfo(line string, rules []compiledRule) lineInfo {
 			continue
 		}
 		for i := rs.start; i < rs.end; i++ {
-			owner[i] = rs.rule // last rule wins
+			owner[i] = rs.rule
 		}
 	}
-
-	// Convert owner table to spans
+	// Compress owner map into spans
 	i := 0
 	for i < len(owner) {
 		if owner[i] == -1 {
@@ -412,24 +427,16 @@ func buildLineInfo(line string, rules []compiledRule) lineInfo {
 	return li
 }
 
-type precomputed struct {
-	lines       []string
-	info        []lineInfo
-	matchLines  []int
-	totalLines  int
-	totalMatches int
-}
-
 /* =========================
-   UI list with matches
+   UI with rules
    ========================= */
 
-func runListUIWithRules(lines []string, cfg Config, sourceKind, sourcePath string) (string, []string, int, bool, int, int) {
+func runListUIWithRules(lines []string, cfg Config) (string, []string, int, bool, int, int) {
 	if len(lines) == 0 {
 		return "", nil, 0, false, 0, 0
 	}
 
-	// Compile rules & precompute matches
+	// Compile & precompute
 	cRules := compileRules(cfg)
 	info := make([]lineInfo, len(lines))
 	matchLines := make([]int, 0, 128)
@@ -463,17 +470,16 @@ func runListUIWithRules(lines []string, cfg Config, sourceKind, sourcePath strin
 	statusStyle := styleFrom(cfg.Colors.Status)
 	topStyle := styleFrom(cfg.Colors.TopStatus)
 
-	// Navigation state
+	// Navigation
 	cursor := 0
 	offset := 0
 	lnWidth := digits(len(lines))
 	gutterWidth := lnWidth + 2
 	contentLeft := gutterWidth
 
-	// Helpers
 	ensureCursorVisible := func() {
 		_, h := s.Size()
-		usable := max(0, h-2) // top + bottom bars
+		usable := max(0, h-2) // top+bottom bars
 		if cursor < offset {
 			offset = cursor
 		} else if cursor >= offset+usable {
@@ -501,19 +507,16 @@ func runListUIWithRules(lines []string, cfg Config, sourceKind, sourcePath strin
 			s.SetContent(x, y, ' ', nil, style)
 		}
 	}
-	// Jump to next/prev line with a match (wrap)
 	nextMatch := func() bool {
 		if len(matchLines) == 0 {
 			return false
 		}
-		// find first > cursor
 		for _, ml := range matchLines {
 			if ml > cursor {
 				cursor = ml
 				return true
 			}
 		}
-		// wrap
 		cursor = matchLines[0]
 		return true
 	}
@@ -521,19 +524,16 @@ func runListUIWithRules(lines []string, cfg Config, sourceKind, sourcePath strin
 		if len(matchLines) == 0 {
 			return false
 		}
-		// find last < cursor
 		for i := len(matchLines) - 1; i >= 0; i-- {
 			if matchLines[i] < cursor {
 				cursor = matchLines[i]
 				return true
 			}
 		}
-		// wrap
 		cursor = matchLines[len(matchLines)-1]
 		return true
 	}
 
-	// Draw a single content line with matched spans
 	drawContentLine := func(rowY, lineIdx, width int, isSel bool) {
 		line := lines[lineIdx]
 		rowStyle := normal
@@ -542,7 +542,7 @@ func runListUIWithRules(lines []string, cfg Config, sourceKind, sourcePath strin
 			rowStyle = highlight
 			gutStyle = gutterHLStyle
 		}
-		// paint background
+		// background
 		fillRow(rowY, rowStyle)
 
 		// gutter
@@ -562,7 +562,7 @@ func runListUIWithRules(lines []string, cfg Config, sourceKind, sourcePath strin
 			return
 		}
 
-		// Render: walk runes, track byte offsets; if inside a span, use its style.
+		// Render matches: track byte positions
 		li := info[lineIdx]
 		spanIdx := 0
 		var curSpan *matchSpan
@@ -575,16 +575,13 @@ func runListUIWithRules(lines []string, cfg Config, sourceKind, sourcePath strin
 			if col >= width {
 				break
 			}
-			rw := 1 // (we'll keep it simple for now; can switch to runewidth later)
 			rStart := bytePos
-			bytePos += len(string(r)) // safe: Go strings are UTF-8; len of single-rune string = bytes
+			bytePos += len(string(r)) // rune -> bytes in UTF-8
 
-			// advance span if necessary
 			for curSpan != nil && rStart >= curSpan.end && spanIdx+1 < len(li.spans) {
 				spanIdx++
 				curSpan = &li.spans[spanIdx]
 			}
-			// determine style
 			st := rowStyle
 			if curSpan != nil && rStart >= curSpan.start && rStart < curSpan.end {
 				rule := cRules[curSpan.rule]
@@ -594,9 +591,8 @@ func runListUIWithRules(lines []string, cfg Config, sourceKind, sourcePath strin
 					st = rule.style
 				}
 			}
-			// draw rune
 			s.SetContent(col, rowY, r, nil, st)
-			col += rw
+			col++
 		}
 	}
 
@@ -615,7 +611,7 @@ func runListUIWithRules(lines []string, cfg Config, sourceKind, sourcePath strin
 			len(matchLines), totalMatches)
 		putStr(0, 0, topStyle, topMsg, -1)
 
-		// Content rows
+		// Content
 		for row := 0; row < usable; row++ {
 			i := offset + row
 			if i >= len(lines) {
@@ -650,7 +646,6 @@ func runListUIWithRules(lines []string, cfg Config, sourceKind, sourcePath strin
 		case *tcell.EventKey:
 			switch e.Key() {
 			case tcell.KeyEnter:
-				// collect outputs
 				return lines[cursor], info[cursor].matchesText, cursor + 1, true, len(matchLines), totalMatches
 			case tcell.KeyEscape:
 				return "", nil, 0, false, len(matchLines), totalMatches
@@ -746,7 +741,7 @@ func main() {
 	primary := flag.Bool("primary", false, "use PRIMARY selection via xclip as input (mutually exclusive with --file)")
 	flag.Parse()
 
-	/* Output default config path (safe write) */
+	/* Output default config (safe write) */
 	if *outputDefault {
 		if *filePath != "" {
 			fmt.Fprintln(os.Stderr, "error: --file cannot be used with --output-default-config")
@@ -803,7 +798,6 @@ func main() {
 			log.Fatalf("%v", err)
 		}
 		if strings.TrimSpace(txt) == "" {
-			// Output empty JSON (cancel semantics)
 			out := Output{Line: "", Matches: []string{}, LineNumber: 0, Source: source}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetEscapeHTML(false)
@@ -811,7 +805,6 @@ func main() {
 			return
 		}
 		lines = splitLines(txt)
-		// drop trailing empty line
 		if len(lines) > 0 && lines[len(lines)-1] == "" {
 			lines = lines[:len(lines)-1]
 		}
@@ -826,7 +819,6 @@ func main() {
 			log.Fatalf("failed to read file: %v", err)
 		}
 		if len(lines) == 0 {
-			// Output empty JSON (cancel semantics)
 			source.Path = *filePath
 			out := Output{Line: "", Matches: []string{}, LineNumber: 0, Source: source}
 			enc := json.NewEncoder(os.Stdout)
@@ -837,18 +829,19 @@ func main() {
 		source.Path = *filePath
 	}
 
-	/* Load config */
+	/* Load config (explicit, ::default::, or per-user; else defaults) */
 	cfg, err := loadConfigMaybe(*configPath)
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	/* Run UI + regex logic */
-	lineText, matches, lineNum, ok, _, _ := runListUIWithRules(lines, cfg, source.Kind, source.Path)
+	/* Run UI */
+	lineText, matches, lineNum, ok, _, _ := runListUIWithRules(lines, cfg)
 
 	/* Always JSON output */
-	var out Output
-	out.Source = source
+	out := Output{
+		Source: source,
+	}
 	if ok {
 		out.Line = strings.TrimRightFunc(lineText, func(r rune) bool { return r == '\r' })
 		out.Matches = matches
