@@ -64,8 +64,16 @@ type Editors struct {
 }
 
 type Config struct {
-	// Action on Enter in TUI: "print" | "edit"
-	Action string `toml:"action"`
+	// Top-level runtime knobs (can be overridden by CLI)
+	Action          string `toml:"action"` // "print" | "edit"
+	Pipe            bool   `toml:"pipe"`   // exactly one of Pipe/File/Primary must be chosen
+	File            string `toml:"file"`
+	Primary         bool   `toml:"primary"`
+	OnlyOnMatches   bool   `toml:"only_on_matches"`
+	OnlyViewMatches bool   `toml:"only_view_matches"`
+	JSONMatches     bool   `toml:"json_matches"`
+	JSONDest        string `toml:"json_dest"`
+	NoTUI           bool   `toml:"no_tui"`
 
 	Colors struct {
 		Normal          ColorPair `toml:"normal"`
@@ -83,10 +91,107 @@ type Config struct {
 	Editors Editors    `toml:"editors"`
 }
 
+// Resolve input mode conflicts deterministically: file > primary > pipe.
+// If an explicit map is provided, we prefer modes explicitly set via CLI;
+// if multiple explicit modes set, we still use the same priority.
+func resolveInputModes(cfg *Config, explicit map[string]bool) (chosen string, note string) {
+	// Determine explicit requests
+	expFile := explicit != nil && explicit["file"] && strings.TrimSpace(cfg.File) != ""
+	expPrimary := explicit != nil && explicit["primary"] && cfg.Primary
+	expPipe := explicit != nil && explicit["pipe"] && cfg.Pipe
+
+	// If any explicit provided, use explicit-only to choose.
+	if expFile || expPrimary || expPipe {
+		if expFile {
+			cfg.Pipe = false
+			cfg.Primary = false
+			chosen = "file"
+		} else if expPrimary {
+			cfg.Pipe = false
+			cfg.File = ""
+			chosen = "primary"
+		} else { // expPipe
+			cfg.File = ""
+			cfg.Primary = false
+			chosen = "pipe"
+		}
+		// Clear conflicts already; note only if more than one explicit set
+		count := 0
+		if expFile {
+			count++
+		}
+		if expPrimary {
+			count++
+		}
+		if expPipe {
+			count++
+		}
+		if count > 1 {
+			note = "multiple input modes specified on CLI; resolved by priority (file > primary > pipe)"
+		}
+		return
+	}
+
+	// Otherwise base on current cfg values (from config/defaults).
+	count := 0
+	if cfg.Pipe {
+		count++
+	}
+	if strings.TrimSpace(cfg.File) != "" {
+		count++
+	}
+	if cfg.Primary {
+		count++
+	}
+
+	if count <= 1 {
+		// nothing to resolve
+		if cfg.Pipe {
+			chosen = "pipe"
+		} else if strings.TrimSpace(cfg.File) != "" {
+			chosen = "file"
+		} else if cfg.Primary {
+			chosen = "primary"
+		} else {
+			chosen = ""
+		}
+		return
+	}
+
+	// Resolve by priority
+	if strings.TrimSpace(cfg.File) != "" {
+		cfg.Pipe = false
+		cfg.Primary = false
+		chosen = "file"
+		note = "multiple input modes in config; resolved by priority (file > primary > pipe)"
+		return
+	}
+	if cfg.Primary {
+		cfg.Pipe = false
+		cfg.File = ""
+		chosen = "primary"
+		note = "multiple input modes in config; resolved by priority (file > primary > pipe)"
+		return
+	}
+	// else pipe
+	cfg.File = ""
+	cfg.Primary = false
+	chosen = "pipe"
+	note = "multiple input modes in config; resolved by priority (file > primary > pipe)"
+	return
+}
 func defaultConfig() Config {
 	var c Config
-	// default behavior: print json on Enter
-	c.Action = "print"
+	// default behavior: now "edit"
+	c.Action = "edit"
+	c.Pipe = true
+	c.File = ""
+	c.Primary = false
+	c.OnlyOnMatches = false
+	c.OnlyViewMatches = false
+	c.JSONMatches = false
+	c.JSONDest = "stderr"
+	c.NoTUI = false
 
 	// colors (names or #rrggbb or palette:N)
 	c.Colors.Normal = ColorPair{FG: "white", BG: "black"}
@@ -94,7 +199,7 @@ func defaultConfig() Config {
 	c.Colors.Gutter = ColorPair{FG: "gray", BG: "black"}
 	c.Colors.GutterHighlight = ColorPair{FG: "black", BG: "white"}
 	c.Colors.Status = ColorPair{FG: "#000000", BG: "#ffff00"}
-	c.Colors.TopStatus = ColorPair{FG: "#000000", BG: "#ff00ff"}
+	c.Colors.TopStatus = ColorPair{FG: "#000000", BG: "#00ff00"}
 	c.Colors.ErrPanel = ColorPair{FG: "#ffffff", BG: "#303030"}
 
 	// default rule: path:line:col (gcc/go-style)
@@ -113,7 +218,7 @@ func defaultConfig() Config {
 
 	// cleanup & UI defaults
 	c.Cleanup.Enabled = true
-	c.Cleanup.AgeMinutes = 60
+	c.Cleanup.AgeMinutes = 5
 	c.UI.ErrLinesMax = 5
 
 	// editors (cudatext defaults)
@@ -133,10 +238,12 @@ func defaultConfig() Config {
    ========================= */
 
 var (
-	flagFile          = flag.String("file", "", "path to UTF-8 text file (one entry per line)")
-	flagConfig        = flag.String("config", "", "path to config TOML (use ::default:: for per-user default path)")
-	flagOutputDefault = flag.Bool("output-default-config", false, "print or write a default config TOML and exit")
-	flagForce         = flag.Bool("force", false, "allow overwriting existing config when outputting defaults")
+	flagFile      = flag.String("file", "", "path to UTF-8 text file (one entry per line)")
+	flagConfig    = flag.String("config", "", "path to config TOML (use ::default:: for per-user default path)")
+	flagOutputNew = flag.Bool("output-new-config", false, "write a NEW config TOML (do not read existing configs) and exit")
+	flagForce     = flag.Bool("force", false, "allow overwriting existing config when writing")
+
+	flagAction = flag.String("action", "edit", `action on Enter: "edit" or "print"`)
 
 	flagPrimary       = flag.Bool("primary", false, "use PRIMARY selection via xclip as input (mutually exclusive with --file/--pipe)")
 	flagPipe          = flag.Bool("pipe", false, "read from stdin, pass-through to stdout in real time, then optionally open TUI")
@@ -194,6 +301,7 @@ func exeBase() string {
 func tempBase() string            { return filepath.Join(os.TempDir(), exeBase()) }
 func tempRoot() string            { return filepath.Join(tempBase(), fmt.Sprintf("%d", os.Getpid())) }
 func ensureDir(path string) error { return os.MkdirAll(filepath.Dir(path), 0o755) }
+func cwdConfigPath() string       { return filepath.Join(".", exeBase()+"-config.toml") }
 func expandWithEnv(s string, env map[string]string) string {
 	return os.Expand(s, func(k string) string {
 		if v, ok := env[k]; ok {
@@ -208,7 +316,7 @@ func shellQuote(arg string) string {
 	}
 	need := false
 	for _, r := range arg {
-		if r <= 0x20 || strings.ContainsRune(`'"$\`+"`*?[]{}<>|&;()!", r) {
+		if r <= 0x20 || strings.ContainsRune(`'"$\\`+"`*?[]{}<>|&;()!", r) {
 			need = true
 			break
 		}
@@ -641,6 +749,9 @@ func filterToMatches(ps preScan) preScan {
 	// in filtered view, every line has matches
 	newMatchLines := make([]int, len(lines))
 	for i := range newMatchLines {
+		i = i
+	}
+	for i := range newMatchLines {
 		newMatchLines[i] = i
 	}
 	return preScan{
@@ -935,6 +1046,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		}
 		return "[1-" + strconv.Itoa(n) + "]=choose-match"
 	}
+
 	cursor, offset := 0, 0
 	lnWidth := digits(len(origIdx)) // display original line numbering width
 	gutterWidth := lnWidth + 2
@@ -1049,7 +1161,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 			}
 			launchEditorForMatch(cfg, matches[0], source, lines[idx], mt, orig, addErr)
 		default:
-			// for now, single-match only per request; notify
+			// multiple matches: guidance
 			addErr("edit: multiple matches on line — press " + rangeHint(len(matches)) + " or j to edit JSON")
 		}
 	}
@@ -1253,16 +1365,10 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 						draw()
 					}
 				case 'j':
-					if strings.ToLower(cfg.Action) == "edit" {
-						editJSONForLine(cursor)
-						ensureCursorVisible()
-						draw()
-					} else {
-						// also allowed even in print mode per request
-						editJSONForLine(cursor)
-						ensureCursorVisible()
-						draw()
-					}
+					// enabled in both actions (print/edit)
+					editJSONForLine(cursor)
+					ensureCursorVisible()
+					draw()
 				case 'J':
 					editJSONForLine(cursor)
 					ensureCursorVisible()
@@ -1462,20 +1568,12 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 func main() {
 	flag.Parse()
 
-	// detect if user explicitly set --err-lines (so CLI can override config and also override defaults when writing)
-	errLinesWasSet := false
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "err-lines" {
-			errLinesWasSet = true
-		}
-	})
+	// track which flags were explicitly set (so CLI can override config cleanly)
+	set := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
-	// handle default-config writing (with overrides!)
-	if *flagOutputDefault {
-		if *flagFile != "" || *flagPipe || *flagPrimary {
-			fmt.Fprintln(os.Stderr, "error: --file/--pipe/--primary cannot be used with --output-default-config")
-			os.Exit(2)
-		}
+	// handle writing a NEW config (do not read any existing configs)
+	if *flagOutputNew {
 		var outPath string
 		if *flagConfig == "::default::" {
 			dp, err := defaultConfigPath()
@@ -1489,14 +1587,47 @@ func main() {
 
 		// build defaults, then apply CLI overrides
 		cfg := defaultConfig()
-		if errLinesWasSet {
+		if set["err-lines"] {
 			cfg.UI.ErrLinesMax = *flagErrLinesMax
 		}
+		if set["action"] {
+			cfg.Action = strings.ToLower(strings.TrimSpace(*flagAction))
+		}
+		// serialize any provided CLI toggles into the new config
+		if set["pipe"] {
+			cfg.Pipe = *flagPipe
+		}
+		if set["file"] {
+			cfg.File = *flagFile
+		}
+		if set["primary"] {
+			cfg.Primary = *flagPrimary
+		}
+		if set["only-on-matches"] {
+			cfg.OnlyOnMatches = *flagOnlyOnMatches
+		}
+		if set["only-view-matches"] {
+			cfg.OnlyViewMatches = *flagOnlyViewMatch
+		}
+		if set["json-matches"] {
+			cfg.JSONMatches = *flagJSONMatches
+		}
+		if set["json-dest"] {
+			cfg.JSONDest = *flagJSONDest
+		}
+		if set["no-tui"] {
+			cfg.NoTUI = *flagNoTUI
+		}
 
+		// Resolve input mode conflicts (file > primary > pipe)
+		_, note := resolveInputModes(&cfg, set)
+		if note != "" {
+			fmt.Fprintln(os.Stderr, note)
+		}
 		// write it (with overwrite confirmation if file exists and not --force)
 		if outPath == "" {
 			if err := writeConfigTo("", cfg); err != nil {
-				log.Fatalf("failed to write default config: %v", err)
+				log.Fatalf("failed to write new config: %v", err)
 			}
 			return
 		}
@@ -1508,7 +1639,7 @@ func main() {
 			}
 		}
 		if err := writeConfigTo(outPath, cfg); err != nil {
-			log.Fatalf("failed to write default config: %v", err)
+			log.Fatalf("failed to write new config: %v", err)
 		}
 		if existed {
 			fmt.Printf("overwrote config: %s\n", outPath)
@@ -1518,44 +1649,78 @@ func main() {
 		return
 	}
 
-	// exactly one input mode
-	modeCount := 0
-	if *flagPipe {
-		modeCount++
-	}
-	if *flagFile != "" {
-		modeCount++
-	}
-	if *flagPrimary {
-		modeCount++
-	}
-	if modeCount != 1 {
-		fmt.Fprintln(os.Stderr, "error: specify exactly one of --pipe, --file, or --primary")
-		os.Exit(2)
+	// ----- Config discovery (precedence) -----
+	// 1) CLI --config path (if provided)  2) ./<exe>-config.toml  3) user default  4) built-in
+	cfg := defaultConfig()
+	var pathToLoad string
+
+	switch {
+	case *flagConfig != "" && *flagConfig != "::default::":
+		pathToLoad = *flagConfig
+	case *flagConfig == "" || *flagConfig == "::default::":
+		// CWD first
+		if fileExists(cwdConfigPath()) {
+			pathToLoad = cwdConfigPath()
+			break
+		}
+		// user default
+		if dp, err := defaultConfigPath(); err == nil && fileExists(dp) {
+			pathToLoad = dp
+		}
 	}
 
-	// load config (from provided path or ::default:: or built-in)
-	cfg := defaultConfig()
-	var tryPath string
-	if *flagConfig == "" || *flagConfig == "::default::" {
-		if dp, err := defaultConfigPath(); err == nil {
-			tryPath = dp
-		}
-	} else {
-		tryPath = *flagConfig
-	}
-	if tryPath != "" && fileExists(tryPath) {
-		if _, err := toml.DecodeFile(tryPath, &cfg); err != nil {
+	if pathToLoad != "" {
+		if _, err := toml.DecodeFile(pathToLoad, &cfg); err != nil {
 			log.Fatalf("failed to load config: %v", err)
 		}
 	}
 
+	// ----- Apply CLI overrides -----
+	if set["action"] {
+		cfg.Action = strings.ToLower(strings.TrimSpace(*flagAction))
+	}
+	if set["err-lines"] {
+		cfg.UI.ErrLinesMax = *flagErrLinesMax
+	}
+	// input mode knobs
+	if set["pipe"] {
+		cfg.Pipe = *flagPipe
+	}
+	if set["file"] {
+		cfg.File = *flagFile
+	}
+	if set["primary"] {
+		cfg.Primary = *flagPrimary
+	}
+	// other toggles
+	if set["only-on-matches"] {
+		cfg.OnlyOnMatches = *flagOnlyOnMatches
+	}
+	if set["only-view-matches"] {
+		cfg.OnlyViewMatches = *flagOnlyViewMatch
+	}
+	if set["json-matches"] {
+		cfg.JSONMatches = *flagJSONMatches
+	}
+	if set["json-dest"] {
+		cfg.JSONDest = *flagJSONDest
+	}
+	if set["no-tui"] {
+		cfg.NoTUI = *flagNoTUI
+	}
+
+	// Resolve input mode conflicts with same priority (file > primary > pipe)
+	_, note := resolveInputModes(&cfg, set)
+	if note != "" {
+		fmt.Fprintln(os.Stderr, note)
+	}
+	// normalize/validate
 	cfg.Action = strings.ToLower(strings.TrimSpace(cfg.Action))
 	if cfg.Action != "print" && cfg.Action != "edit" {
-		cfg.Action = "print"
+		cfg.Action = "edit"
 	}
 	if cfg.Cleanup.AgeMinutes <= 0 {
-		cfg.Cleanup.AgeMinutes = 60
+		cfg.Cleanup.AgeMinutes = 5
 	}
 	if cfg.UI.ErrLinesMax <= 0 {
 		cfg.UI.ErrLinesMax = 5
@@ -1563,11 +1728,14 @@ func main() {
 	if cfg.Editors.Spaces <= 0 {
 		cfg.Editors.Spaces = 4
 	}
+	if strings.TrimSpace(cfg.JSONDest) == "" {
+		cfg.JSONDest = "stderr"
+	}
 
-	// effective err panel height: CLI overrides config if provided
-	effectiveErrLines := cfg.UI.ErrLinesMax
-	if errLinesWasSet {
-		effectiveErrLines = *flagErrLinesMax
+	// Ensure at least one input mode is selected after resolution
+	if !cfg.Pipe && strings.TrimSpace(cfg.File) == "" && !cfg.Primary {
+		fmt.Fprintln(os.Stderr, "error: no input selected; set one of: pipe=true, file=..., or primary=true (config and/or CLI)")
+		os.Exit(2)
 	}
 
 	// auto- or on-demand cleanup
@@ -1583,8 +1751,8 @@ func main() {
 	isTTYOut := term.IsTerminal(int(os.Stdout.Fd()))
 
 	// PIPE MODE
-	if *flagPipe {
-		if err := runPipeMode(cfg, isTTYOut, *flagJSONMatches, *flagJSONDest, *flagOnlyOnMatches, *flagOnlyViewMatch, *flagNoTUI, effectiveErrLines); err != nil {
+	if cfg.Pipe {
+		if err := runPipeMode(cfg, isTTYOut, cfg.JSONMatches, cfg.JSONDest, cfg.OnlyOnMatches, cfg.OnlyViewMatches, cfg.NoTUI, cfg.UI.ErrLinesMax); err != nil {
 			log.Fatalf("pipe mode error: %v", err)
 		}
 		return
@@ -1594,7 +1762,7 @@ func main() {
 	var lines []string
 	source := SourceInfo{Kind: "file"}
 
-	if *flagPrimary {
+	if cfg.Primary {
 		source.Kind = "primary"
 		txt, err := readPrimaryWithXclip()
 		if err != nil {
@@ -1615,11 +1783,11 @@ func main() {
 		}
 	} else {
 		var err error
-		lines, err = readLines(*flagFile)
+		lines, err = readLines(cfg.File)
 		if err != nil {
 			log.Fatalf("failed to read file: %v", err)
 		}
-		source.Path = *flagFile
+		source.Path = cfg.File
 		if len(lines) == 0 {
 			if cfg.Action == "print" {
 				out := Output{Line: "", Matches: []string{}, LineNumber: 0, Source: source}
@@ -1636,18 +1804,18 @@ func main() {
 	ps := precompute(lines, cRules)
 
 	// optional view filter
-	if *flagOnlyViewMatch {
+	if cfg.OnlyViewMatches {
 		ps = filterToMatches(ps)
 	}
 
 	// open only on matches if requested
-	if *flagOnlyOnMatches && ps.totalMatches == 0 {
+	if cfg.OnlyOnMatches && ps.totalMatches == 0 {
 		return
 	}
 
 	// optional NDJSON before TUI
-	if *flagJSONMatches && ps.totalMatches > 0 {
-		wc, err := openDest(*flagJSONDest)
+	if cfg.JSONMatches && ps.totalMatches > 0 {
+		wc, err := openDest(cfg.JSONDest)
 		if err != nil {
 			log.Fatalf("json-dest error: %v", err)
 		}
@@ -1670,13 +1838,13 @@ func main() {
 		}
 		_ = wc.Close()
 	}
-	if *flagNoTUI {
+	if cfg.NoTUI {
 		return
 	}
 
 	// TUI
 	var panel []string
-	lineText, matchesText, lineNum, ok, _, _ := runListUIWithRules(ps, cfg, source, rulePairs, effectiveErrLines, &panel)
+	lineText, matchesText, lineNum, ok, _, _ := runListUIWithRules(ps, cfg, source, rulePairs, cfg.UI.ErrLinesMax, &panel)
 
 	// replay panel after exit
 	if len(panel) > 0 {
