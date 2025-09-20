@@ -926,7 +926,15 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		}
 		return b.String()
 	}
-
+	rangeHint := func(n int) string {
+		if n <= 1 {
+			return ""
+		}
+		if n >= 10 {
+			return "[1-9,0]=choose-match"
+		}
+		return "[1-" + strconv.Itoa(n) + "]=choose-match"
+	}
 	cursor, offset := 0, 0
 	lnWidth := digits(len(origIdx)) // display original line numbering width
 	gutterWidth := lnWidth + 2
@@ -1042,7 +1050,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 			launchEditorForMatch(cfg, matches[0], source, lines[idx], mt, orig, addErr)
 		default:
 			// for now, single-match only per request; notify
-			addErr("edit: multiple matches on line; numeric selection not implemented yet")
+			addErr("edit: multiple matches on line — press " + rangeHint(len(matches)) + " or j to edit JSON")
 		}
 	}
 
@@ -1164,7 +1172,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		origNum := origIdx[cursor] + 1
 		charCount := utf8.RuneCountInString(lines[cursor])
 		base := "Enter=" + strings.ToLower(cfg.Action)
-		help := "  e/E=edit  [1-9,0]=choose-match  j/J=edit-json  q/Esc=quit"
+		help := "  e/E=edit  " + rangeHint(len(info[cursor].matches)) + "  j/J=edit-json  q/Esc=quit"
 		status := fmt.Sprintf(" %d/%d (orig #%d) | chars: %d | ↑/↓ PgUp/PgDn Home/End  %s %s ",
 			cursor+1, len(lines), origNum, charCount, base, help)
 		putStr(0, statusRow, statusStyle, ellipsis(status, w), -1)
@@ -1275,30 +1283,14 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 						draw()
 					}
 				case '1', '2', '3', '4', '5', '6', '7', '8', '9', '0':
-					// numeric match selection: 1..9 -> 0..8, 0 -> 9
+					// numeric match selection: '1'..'9' => 0..8, '0' => 9
 					ms := info[cursor].matches
 					if len(ms) > 1 {
-						var pick int
-						switch e.Rune() {
-						case '1':
-							pick = 0
-						case '2':
-							pick = 1
-						case '3':
-							pick = 2
-						case '4':
-							pick = 3
-						case '5':
-							pick = 4
-						case '6':
-							pick = 5
-						case '7':
-							pick = 6
-						case '8':
-							pick = 7
-						case '9':
-							pick = 8
-						case '0':
+						pick := -1
+						r := e.Rune()
+						if r >= '1' && r <= '9' {
+							pick = int(r - '1')
+						} else if r == '0' {
 							pick = 9
 						}
 						if pick >= 0 && pick < len(ms) {
