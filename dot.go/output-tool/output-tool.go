@@ -15,11 +15,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 	"github.com/gdamore/tcell/v2"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -40,9 +42,9 @@ type Rule struct {
 }
 
 type Config struct {
-	// Global action: "print" (default) or "spawn" (next pass wires FIFO spawning on Enter)
+	// Global action on Enter inside TUI: "print" or "spawn"
 	Action  string   `toml:"action"`
-	Command []string `toml:"command"`
+	Command []string `toml:"command"` // argv, supports ${VAR} expansion and "<path>" token
 
 	Colors struct {
 		Normal          ColorPair `toml:"normal"`
@@ -58,11 +60,10 @@ type Config struct {
 func defaultConfig() Config {
 	var c Config
 
-	// default action: print (spawn is supported by config, we’ll wire the FIFOed run next pass)
+	// Default to print; set "spawn" in your config to use the external command
 	c.Action = "print"
 	c.Command = []string{"xfce4-terminal", "--window", "--working-directory=${PWD}", "--execute", "less", "<path>"}
 
-	// Colors: keep named for main UI, use hex for bars to avoid theme remap
 	c.Colors.Normal = ColorPair{FG: "white", BG: "black"}
 	c.Colors.Highlight = ColorPair{FG: "black", BG: "white"}
 	c.Colors.Gutter = ColorPair{FG: "gray", BG: "black"}
@@ -83,7 +84,7 @@ func defaultConfig() Config {
 }
 
 /* =========================
-   Flags (new)
+   Flags (includes pipe/NDJSON)
    ========================= */
 
 var (
@@ -138,11 +139,6 @@ func fileExists(path string) bool {
    Color parsing
    ========================= */
 
-type ColorPairStyle struct {
-	N  tcell.Style
-	HL tcell.Style
-}
-
 func parseColor(s string) tcell.Color {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -158,11 +154,15 @@ func parseColor(s string) tcell.Color {
 }
 
 func styleFrom(p ColorPair) tcell.Style {
-	return tcell.StyleDefault.Foreground(parseColor(p.FG)).Background(parseColor(p.BG))
+	return tcell.StyleDefault.
+		Foreground(parseColor(p.FG)).
+		Background(parseColor(p.BG))
 }
 
 func invertStyle(p ColorPair) tcell.Style {
-	return tcell.StyleDefault.Foreground(parseColor(p.BG)).Background(parseColor(p.FG))
+	return tcell.StyleDefault.
+		Foreground(parseColor(p.BG)).
+		Background(parseColor(p.FG))
 }
 
 /* =========================
@@ -372,8 +372,9 @@ type lineInfo struct {
 	matchesText []string    // all raw match texts (includes overlaps)
 }
 
-func compileRules(cfg Config) []compiledRule {
+func compileRules(cfg Config) ([]compiledRule, []ColorPair) {
 	var cr []compiledRule
+	var pairs []ColorPair
 	for i, r := range cfg.Rules {
 		if strings.TrimSpace(r.Regex) == "" {
 			fmt.Fprintf(os.Stderr, "warning: rule %d has empty regex; skipping\n", i)
@@ -391,8 +392,9 @@ func compileRules(cfg Config) []compiledRule {
 			styleInv: invertStyle(cp),
 			name:     r.Name,
 		})
+		pairs = append(pairs, cp)
 	}
-	return cr
+	return cr, pairs
 }
 
 func buildLineInfo(line string, rules []compiledRule) lineInfo {
@@ -451,7 +453,7 @@ func buildLineInfo(line string, rules []compiledRule) lineInfo {
 		li.spans = append(li.spans, matchSpan{start: i, end: j, rule: rule})
 		i = j
 	}
-	return li
+	return li crap
 }
 
 type preScan struct {
@@ -460,10 +462,6 @@ type preScan struct {
 	matchLines   []int
 	totalMatches int
 }
-
-/* =========================
-   Pre-scan utility
-   ========================= */
 
 func precompute(lines []string, rules []compiledRule) preScan {
 	ps := preScan{
@@ -482,7 +480,29 @@ func precompute(lines []string, rules []compiledRule) preScan {
 }
 
 /* =========================
-   UI with rules (print mode on Enter)
+   NDJSON helpers
+   ========================= */
+
+func openDest(dest string) (io.WriteCloser, error) {
+	switch dest {
+	case "stderr":
+		return nopCloser{os.Stderr}, nil
+	case "stdout":
+		return nopCloser{os.Stdout}, nil
+	default:
+		if err := ensureDir(dest); err != nil {
+			return nil, err
+		}
+		return os.Create(dest)
+	}
+}
+
+type nopCloser struct{ io.Writer }
+
+func (n nopCloser) Close() error { return nil }
+
+/* =========================
+   Spawn support (FIFO, detach)
    ========================= */
 
 type SourceInfo struct {
@@ -497,7 +517,47 @@ type Output struct {
 	Source     SourceInfo `json:"source"`
 }
 
-func runListUIWithRules(ps preScan, cfg Config, source SourceInfo) (string, []string, int, bool, int, int) {
+type activeMsg struct {
+	Idx    int
+	Active bool
+	ErrMsg string // optional transient error to show
+}
+
+func expandArg(s string) string {
+	return os.Expand(s, func(k string) string { return os.Getenv(k) })
+}
+
+func expandArgs(argv []string, fifoPath string) []string {
+	out := make([]string, 0, len(argv))
+	for _, a := range argv {
+		a = strings.ReplaceAll(a, "<path>", fifoPath)
+		a = expandArg(a)
+		out = append(out, a)
+	}
+	return out
+}
+
+func fifoRoot() string {
+	return filepath.Join(os.TempDir(), "output-tool", fmt.Sprintf("%d", os.Getpid()))
+}
+
+func makeFIFO() (string, error) {
+	root := fifoRoot()
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(root, fmt.Sprintf("run-%d.fifo", time.Now().UnixNano()))
+	if err := unix.Mkfifo(path, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+/* =========================
+   UI with rules (+ spawn)
+   ========================= */
+
+func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []ColorPair) (string, []string, int, bool, int, int) {
 	lines := ps.lines
 	info := ps.info
 	matchLines := ps.matchLines
@@ -533,6 +593,15 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo) (string, []st
 	lnWidth := digits(len(lines))
 	gutterWidth := lnWidth + 2
 	contentLeft := gutterWidth
+
+	// Spawn/active tracking
+	active := map[int]bool{}
+	lastErr := "" // transient message for status bar
+
+	// Helper to post UI wakeups from goroutines
+	post := func(msg activeMsg) {
+		s.PostEvent(tcell.NewEventInterrupt(msg))
+	}
 
 	ensureCursorVisible := func() {
 		_, h := s.Size()
@@ -591,6 +660,100 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo) (string, []st
 		return true
 	}
 
+	// Spawn for current line (FIFO + detached proc)
+	spawnCurrent := func(idx int) {
+		if cfg.Action != "spawn" {
+			return
+		}
+		// block re-run while active
+		if active[idx] {
+			post(activeMsg{Idx: idx, Active: true, ErrMsg: "already active"})
+			return
+		}
+
+		// Prepare JSON payload
+		rec := Output{
+			Line:       lines[idx],
+			Matches:    info[idx].matchesText,
+			LineNumber: idx + 1,
+			Source:     source,
+		}
+
+		// Create FIFO
+		fifo, err := makeFIFO()
+		if err != nil {
+			post(activeMsg{Idx: idx, Active: false, ErrMsg: "mkfifo failed: " + err.Error()})
+			return
+		}
+
+		// Build argv
+		if len(cfg.Command) == 0 {
+			post(activeMsg{Idx: idx, Active: false, ErrMsg: "config.command is empty"})
+			_ = os.Remove(fifo)
+			return
+		}
+		argv := expandArgs(cfg.Command, fifo)
+
+		// Start process detached
+		cmd := exec.Command(argv[0], argv[1:]...)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := cmd.Start(); err != nil {
+			post(activeMsg{Idx: idx, Active: false, ErrMsg: "spawn failed: " + err.Error()})
+			_ = os.Remove(fifo)
+			return
+		}
+		_ = cmd.Process.Release()
+
+		// mark active now
+		active[idx] = true
+		post(activeMsg{Idx: idx, Active: true})
+
+		// Writer goroutine with timeout; unlink after open
+		go func(lineIdx int, fifoPath string, payload Output) {
+			openCh := make(chan *os.File, 1)
+			errCh := make(chan error, 1)
+
+			go func() {
+				f, err := os.OpenFile(fifoPath, os.O_WRONLY, 0o600)
+				if err != nil {
+					errCh <- err
+					return
+				}
+				openCh <- f
+			}()
+
+			var f *os.File
+			select {
+			case f = <-openCh:
+				// Reader is present; unlink immediately so no crumbs remain
+				_ = os.Remove(fifoPath)
+			case err := <-errCh:
+				post(activeMsg{Idx: lineIdx, Active: false, ErrMsg: "open fifo failed: " + err.Error()})
+				_ = os.Remove(fifoPath)
+				active[lineIdx] = false
+				post(activeMsg{Idx: lineIdx, Active: false})
+				return
+			case <-time.After(10 * time.Second):
+				post(activeMsg{Idx: lineIdx, Active: false, ErrMsg: "reader timeout"})
+				_ = os.Remove(fifoPath)
+				active[lineIdx] = false
+				post(activeMsg{Idx: lineIdx, Active: false})
+				return
+			}
+
+			// Write JSON
+			enc := json.NewEncoder(f)
+			enc.SetEscapeHTML(false)
+			_ = enc.Encode(payload)
+			_ = f.Close()
+
+			// Done
+			active[lineIdx] = false
+			post(activeMsg{Idx: lineIdx, Active: false})
+		}(idx, fifo, rec)
+	}
+
+	// Draw a single content line with matched spans
 	drawContentLine := func(rowY, lineIdx, width int, isSel bool) {
 		line := lines[lineIdx]
 		rowStyle := normal
@@ -619,7 +782,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo) (string, []st
 			return
 		}
 
-		// Render matches: track byte positions
+		// Render matches
 		li := info[lineIdx]
 		spanIdx := 0
 		var curSpan *matchSpan
@@ -633,32 +796,61 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo) (string, []st
 				break
 			}
 			rStart := bytePos
-			bytePos += len(string(r)) // rune -> bytes in UTF-8
-
+			bytePos += len(string(r))
 			for curSpan != nil && rStart >= curSpan.end && spanIdx+1 < len(li.spans) {
 				spanIdx++
 				curSpan = &li.spans[spanIdx]
 			}
 			st := rowStyle
 			if curSpan != nil && rStart >= curSpan.start && rStart < curSpan.end {
-				rule := cfg.Rules[li.spans[spanIdx].rule] // used only to choose style; safe
-				_ = rule
-				cr := info[lineIdx].spans[spanIdx].rule
-				// derive style from compiled rules (we didn’t keep them here; rely on rowStyle override below)
-				// For simplicity, reusing precomputed styles via cfg again:
-				// (We stored only spans with rule index; visual style computed earlier in buildLineInfo)
-				// Here, just choose: selected → invert style; else → use compiled style.
-				// We’ll reconstruct styles quickly:
-				stPair := ColorPair{FG: cfg.Rules[cr].FG, BG: cfg.Rules[cr].BG}
+				ri := li.spans[spanIdx].rule
 				if isSel {
-					st = invertStyle(stPair)
+					st = invertStyle(rulePairs[ri])
 				} else {
-					st = styleFrom(stPair)
+					st = styleFrom(rulePairs[ri])
 				}
 			}
 			s.SetContent(col, rowY, r, nil, st)
 			col++
 		}
+	}
+
+	// Active list as a compact string
+	activeList := func(cur int) string {
+		if len(active) == 0 {
+			return ""
+		}
+		// collect keys
+		items := make([]int, 0, len(active))
+		for k, v := range active {
+			if v {
+				items = append(items, k)
+			}
+		}
+		if len(items) == 0 {
+			return ""
+		}
+		// sort-ish order not required; keep insertion-order feel
+		// Build display list; cap to ~8 entries
+		b := &strings.Builder{}
+		b.WriteString("  active:")
+		count := 0
+		for _, idx := range items {
+			if count >= 8 {
+				b.WriteString(fmt.Sprintf(" …(+%d)", len(items)-count))
+				break
+			}
+			if idx == cur {
+				fmt.Fprintf(b, " *%d*", idx+1)
+			} else {
+				fmt.Fprintf(b, " %d", idx+1)
+			}
+			count++
+			if count < len(items) && count < 8 {
+				b.WriteString(",")
+			}
+		}
+		return b.String()
 	}
 
 	draw := func() {
@@ -672,8 +864,8 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo) (string, []st
 
 		// Top bar
 		fillRow(0, topStyle)
-		topMsg := fmt.Sprintf(" input:%s  action:%s  match-lines:%d  matches:%d  |  n:next-match  N:prev-match ",
-			source.Kind, strings.ToLower(cfg.Action), len(matchLines), totalMatches)
+		topMsg := fmt.Sprintf(" input:%s  action:%s  match-lines:%d  matches:%d%s  |  n:next-match  N:prev-match ",
+			source.Kind, strings.ToLower(cfg.Action), len(matchLines), totalMatches, activeList(cursor))
 		putStr(0, 0, topStyle, topMsg, -1)
 
 		// Content
@@ -691,9 +883,12 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo) (string, []st
 		fillRow(statusRow, statusStyle)
 		lineNum := cursor + 1
 		charCount := utf8.RuneCountInString(lines[cursor])
-		btm := fmt.Sprintf(" %d/%d  |  chars: %d  |  ↑/↓ PgUp/PgDn Home/End  Enter=select  q/Esc=quit ",
-			lineNum, len(lines), charCount)
-		putStr(0, statusRow, statusStyle, btm, -1)
+		status := fmt.Sprintf(" %d/%d  |  chars: %d  |  ↑/↓ PgUp/PgDn Home/End  Enter=%s  q/Esc=quit ",
+			lineNum, len(lines), charCount, map[bool]string{true: "spawn", false: "select"}[cfg.Action == "spawn"])
+		if lastErr != "" {
+			status += "  ⚠ " + lastErr
+		}
+		putStr(0, statusRow, statusStyle, status, -1)
 
 		s.Show()
 	}
@@ -704,6 +899,26 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo) (string, []st
 	for {
 		ev := s.PollEvent()
 		switch e := ev.(type) {
+		case *tcell.EventInterrupt:
+			// payload from goroutines
+			if msg, ok := e.Data().(activeMsg); ok {
+				if msg.ErrMsg != "" {
+					lastErr = msg.ErrMsg
+					// Clear after short time via redraw trigger from timer goroutine
+					go func() {
+						time.Sleep(1500 * time.Millisecond)
+						if lastErr == msg.ErrMsg {
+							lastErr = ""
+							post(activeMsg{}) // trigger redraw
+						}
+					}()
+				}
+				if msg.Idx >= 0 {
+					active[msg.Idx] = msg.Active
+				}
+				ensureCursorVisible()
+				draw()
+			}
 		case *tcell.EventResize:
 			s.Sync()
 			ensureCursorVisible()
@@ -711,7 +926,13 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo) (string, []st
 		case *tcell.EventKey:
 			switch e.Key() {
 			case tcell.KeyEnter:
-				// For now: print-mode behavior (spawn mode will be wired next pass)
+				if cfg.Action == "spawn" {
+					spawnCurrent(cursor)
+					ensureCursorVisible()
+					draw()
+					break
+				}
+				// print mode: select and exit
 				return lines[cursor], info[cursor].matchesText, cursor + 1, true, len(matchLines), totalMatches
 			case tcell.KeyEscape:
 				return "", nil, 0, false, len(matchLines), totalMatches
@@ -780,37 +1001,14 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo) (string, []st
 }
 
 /* =========================
-   NDJSON helpers
-   ========================= */
-
-func openDest(dest string) (io.WriteCloser, error) {
-	switch dest {
-	case "stderr":
-		return nopCloser{os.Stderr}, nil
-	case "stdout":
-		return nopCloser{os.Stdout}, nil
-	default:
-		// path
-		if err := ensureDir(dest); err != nil {
-			return nil, err
-		}
-		return os.Create(dest)
-	}
-}
-
-type nopCloser struct{ io.Writer }
-
-func (n nopCloser) Close() error { return nil }
-
-/* =========================
    PIPE mode (stdin streaming)
    ========================= */
 
 func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, onlyOnMatches bool, noTUI bool) error {
 	// Compile rules once
-	cRules := compileRules(cfg)
+	cRules, _ := compileRules(cfg)
 
-	// Temp dir for this run
+	// Temp dir/file for captured stream
 	root := filepath.Join(os.TempDir(), "output-tool", fmt.Sprintf("%d", os.Getpid()))
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return fmt.Errorf("mk temp dir: %w", err)
@@ -835,21 +1033,17 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 	lineNo := 0
 	for in.Scan() {
 		raw := in.Text()
-
 		// passthrough
 		fmt.Fprintln(os.Stdout, raw)
-
 		// store
 		fmt.Fprintln(outf, raw)
 		lines = append(lines, raw)
-
 		// match this line
 		li := buildLineInfo(raw, cRules)
 		if len(li.spans) > 0 {
 			matchLines = append(matchLines, lineNo)
 			totalMatches += len(li.matchesText)
 		}
-
 		lineNo++
 	}
 	if err := in.Err(); err != nil {
@@ -857,19 +1051,18 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 	}
 	_ = outf.Sync()
 
-	// Build pre-scan for TUI / NDJSON (re-use of what we computed)
+	// Build pre-scan
 	ps := preScan{
 		lines:        lines,
 		info:         make([]lineInfo, len(lines)),
 		matchLines:   matchLines,
 		totalMatches: totalMatches,
 	}
-	// We need full info (matchesText) for NDJSON; rebuild using compiled rules
 	for i, ln := range lines {
 		ps.info[i] = buildLineInfo(ln, cRules)
 	}
 
-	// Non-TTY: stay “cat-like”; optionally dump NDJSON
+	// Non-TTY: remain cat-like, optional NDJSON
 	if !isTTYOut {
 		if emitNDJSON && totalMatches > 0 {
 			wc, err := openDest(jsonDest)
@@ -892,17 +1085,15 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 				}
 			}
 		}
-		// Done
 		return nil
 	}
 
-	// TTY: decide whether to open TUI
+	// TTY: decide to open TUI
 	if onlyOnMatches && totalMatches == 0 {
-		// nothing to show; you already saw the stream
 		return nil
 	}
 
-	// If requested, dump NDJSON before TUI
+	// NDJSON pre-TUI if requested
 	if emitNDJSON && totalMatches > 0 {
 		wc, err := openDest(jsonDest)
 		if err != nil {
@@ -930,27 +1121,11 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 		return nil
 	}
 
-	// Open TUI over captured content
+	// Open TUI
 	src := SourceInfo{Kind: "pipe"}
-	lineText, matches, lineNum, ok, _, _ := runListUIWithRules(ps, cfg, src)
-
-	// Print selection (JSON) only if in print mode
-	if cfg.Action == "print" {
-		var out Output
-		out.Source = src
-		if ok {
-			out.Line = strings.TrimRightFunc(lineText, func(r rune) bool { return r == '\r' })
-			out.Matches = matches
-			out.LineNumber = lineNum
-		} else {
-			out.Line = ""
-			out.Matches = []string{}
-			out.LineNumber = 0
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetEscapeHTML(false)
-		_ = enc.Encode(out)
-	}
+	_, _, _, ok, _, _ := runListUIWithRules(ps, cfg, src, nil)
+	// In spawn mode, Enter does not exit; q/Esc exits. In print mode we don't print here for --pipe.
+	_ = ok
 	return nil
 }
 
@@ -961,7 +1136,7 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 func main() {
 	flag.Parse()
 
-	// Handle default config output path creation / overwrite prompts
+	// Handle default config writing
 	if *flagOutputDefault {
 		if *flagFile != "" || *flagPipe || *flagPrimary {
 			fmt.Fprintln(os.Stderr, "error: --file/--pipe/--primary cannot be used with --output-default-config")
@@ -1003,7 +1178,7 @@ func main() {
 		return
 	}
 
-	// Enforce mutual exclusivity: exactly one of --pipe, --file, --primary
+	// Enforce exactly one of --pipe, --file, --primary
 	modeCount := 0
 	if *flagPipe {
 		modeCount++
@@ -1024,7 +1199,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
-	// normalize action
 	cfg.Action = strings.ToLower(strings.TrimSpace(cfg.Action))
 	if cfg.Action != "print" && cfg.Action != "spawn" {
 		cfg.Action = "print"
@@ -1052,7 +1226,6 @@ func main() {
 			log.Fatalf("%v", err)
 		}
 		if strings.TrimSpace(txt) == "" {
-			// nothing to show; behave like empty selection
 			if cfg.Action == "print" {
 				out := Output{Line: "", Matches: []string{}, LineNumber: 0, Source: source}
 				enc := json.NewEncoder(os.Stdout)
@@ -1085,16 +1258,15 @@ func main() {
 	}
 
 	// Compile & pre-scan
-	cRules := compileRules(cfg)
+	cRules, rulePairs := compileRules(cfg)
 	ps := precompute(lines, cRules)
 
-	// If only-on-matches and none → exit
+	// only-on-matches guard
 	if *flagOnlyOnMatches && ps.totalMatches == 0 {
-		// If json-matches requested, there’s nothing to emit, so just exit
 		return
 	}
 
-	// If requested, emit NDJSON of matches prior to TUI (even in TTY)
+	// Optional NDJSON before TUI
 	if *flagJSONMatches && ps.totalMatches > 0 {
 		wc, err := openDest(*flagJSONDest)
 		if err != nil {
@@ -1116,14 +1288,12 @@ func main() {
 		}
 		_ = wc.Close()
 	}
-
-	// If no-TUI requested, stop here
 	if *flagNoTUI {
 		return
 	}
 
 	// Open TUI
-	lineText, matches, lineNum, ok, _, _ := runListUIWithRules(ps, cfg, source)
+	lineText, matches, lineNum, ok, _, _ := runListUIWithRules(ps, cfg, source, rulePairs)
 
 	// Print selection JSON only in print mode
 	if cfg.Action == "print" {
