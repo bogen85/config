@@ -34,10 +34,13 @@ type ColorPair struct {
 }
 
 type Rule struct {
-	Name  string `toml:"name"`
-	Regex string `toml:"regex"`
-	FG    string `toml:"fg"`
-	BG    string `toml:"bg"`
+	Name        string `toml:"name"`
+	Regex       string `toml:"regex"`
+	FileGroup   int    `toml:"file_group"`   // 1-based capture group index; 0 = unused
+	LineGroup   int    `toml:"line_group"`   // 1-based capture group index; 0 = unused
+	ColumnGroup int    `toml:"column_group"` // 1-based capture group index; 0 = unused
+	FG          string `toml:"fg"`
+	BG          string `toml:"bg"`
 }
 
 type CleanupCfg struct {
@@ -49,8 +52,15 @@ type UICfg struct {
 	ErrLinesMax int `toml:"err_lines_max"` // max height for error panel; 0 disables
 }
 
+type Editors struct {
+	File        []string `toml:"file"`          // e.g. ["cudatext","${__FILE__}"]
+	FileLine    []string `toml:"file_line"`     // e.g. ["cudatext","${__FILE__}@${__LINE__}"]
+	FileLineCol []string `toml:"file_line_col"` // e.g. ["cudatext","${__FILE__}@${__LINE__}@${__COLUMN__}"]
+	Fallback    []string `toml:"fallback"`      // e.g. ["cudatext","${__JSON__}"]
+}
+
 type Config struct {
-	// Action on Enter in TUI: "print" | "spawn"
+	// Action on Enter in TUI: "print" | "spawn" | "edit"
 	Action  string   `toml:"action"`
 	Command []string `toml:"command"` // argv; supports ${VAR} and "<path>"
 
@@ -67,6 +77,7 @@ type Config struct {
 	Rules   []Rule     `toml:"rules"`
 	Cleanup CleanupCfg `toml:"cleanup"`
 	UI      UICfg      `toml:"ui"`
+	Editors Editors    `toml:"editors"`
 }
 
 func defaultConfig() Config {
@@ -85,14 +96,29 @@ func defaultConfig() Config {
 	c.Colors.ErrPanel = ColorPair{FG: "#ffffff", BG: "#303030"}
 
 	// default rule: path:line:col (gcc/go-style)
+	// capture groups: 1=file, 2=line, 3=column
 	c.Rules = []Rule{
-		{Name: "path:line:col", Regex: `(?:\.\.?/)?[A-Za-z0-9._/\-]+:\d+:\d+`, FG: "black", BG: "green"},
+		{
+			Name:        "path:line:col",
+			Regex:       `(?:\.\.?/)?([A-Za-z0-9._/\-]+):(\d+):(\d+)`,
+			FileGroup:   1,
+			LineGroup:   2,
+			ColumnGroup: 3,
+			FG:          "black",
+			BG:          "green",
+		},
 	}
 
 	// cleanup & UI defaults
 	c.Cleanup.Enabled = true
 	c.Cleanup.AgeMinutes = 60
 	c.UI.ErrLinesMax = 5
+
+	// editors (cudatext defaults)
+	c.Editors.File = []string{"cudatext", "${__FILE__}"}
+	c.Editors.FileLine = []string{"cudatext", "${__FILE__}@${__LINE__}"}
+	c.Editors.FileLineCol = []string{"cudatext", "${__FILE__}@${__LINE__}@${__COLUMN__}"}
+	c.Editors.Fallback = []string{"cudatext", "${__JSON__}"}
 
 	return c
 }
@@ -115,7 +141,7 @@ var (
 	flagNoTUI         = flag.Bool("no-tui", false, "when emitting NDJSON, skip TUI and exit")
 
 	flagErrLinesMax = flag.Int("err-lines", 5, "max lines for bottom error panel (0 disables)")
-	flagSpawnDryRun = flag.Bool("spawn-dry-run", false, "do not spawn; log argv with <path> substituted to the error panel")
+	flagSpawnDryRun = flag.Bool("spawn-dry-run", false, "do not spawn; log argv with placeholders resolved to the error panel")
 
 	flagCleanupNow = flag.Bool("cleanup-orphaned", false, "cleanup old temp files at startup (uses config.cleanup.age_minutes)")
 )
@@ -162,14 +188,21 @@ func exeBase() string {
 func tempBase() string            { return filepath.Join(os.TempDir(), exeBase()) }
 func tempRoot() string            { return filepath.Join(tempBase(), fmt.Sprintf("%d", os.Getpid())) }
 func ensureDir(path string) error { return os.MkdirAll(filepath.Dir(path), 0o755) }
-func expandArg(s string) string   { return os.Expand(s, func(k string) string { return os.Getenv(k) }) }
+func expandWithEnv(s string, env map[string]string) string {
+	return os.Expand(s, func(k string) string {
+		if v, ok := env[k]; ok {
+			return v
+		}
+		return os.Getenv(k)
+	})
+}
 func shellQuote(arg string) string {
 	if arg == "" {
 		return "''"
 	}
 	need := false
 	for _, r := range arg {
-		if r <= 0x20 || strings.ContainsRune(`'\"$\\`+"`*?[]{}<>|&;()!", r) {
+		if r <= 0x20 || strings.ContainsRune(`'"$\`+"`*?[]{}<>|&;()!", r) {
 			need = true
 			break
 		}
@@ -179,11 +212,11 @@ func shellQuote(arg string) string {
 	}
 	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
 }
-func expandArgs(argv []string, path string) []string {
+func expandArgsWithEnv(argv []string, extra map[string]string, path string) []string {
 	out := make([]string, 0, len(argv))
 	for _, a := range argv {
 		a = strings.ReplaceAll(a, "<path>", path)
-		a = expandArg(a)
+		a = expandWithEnv(a, extra)
 		out = append(out, a)
 	}
 	return out
@@ -390,15 +423,32 @@ func confirmOverwriteDialog(target string) bool {
    ========================= */
 
 type compiledRule struct {
-	re       *regexp.Regexp
-	style    tcell.Style
-	styleInv tcell.Style
-	name     string
+	re          *regexp.Regexp
+	style       tcell.Style
+	styleInv    tcell.Style
+	name        string
+	fileGroup   int
+	lineGroup   int
+	columnGroup int
 }
 type matchSpan struct{ start, end, rule int }
+
+type matchDetail struct {
+	start  int
+	end    int
+	rule   int
+	text   string
+	hasF   bool
+	file   string
+	hasL   bool
+	line   int
+	hasC   bool
+	column int
+}
+
 type lineInfo struct {
-	spans       []matchSpan
-	matchesText []string
+	spans   []matchSpan
+	matches []matchDetail
 }
 
 func compileRules(cfg Config) ([]compiledRule, []ColorPair) {
@@ -416,14 +466,22 @@ func compileRules(cfg Config) ([]compiledRule, []ColorPair) {
 		}
 		cp := ColorPair{FG: r.FG, BG: r.BG}
 		out = append(out, compiledRule{
-			re:       re,
-			style:    styleFrom(cp),
-			styleInv: invertStyle(cp),
-			name:     r.Name,
+			re:          re,
+			style:       styleFrom(cp),
+			styleInv:    invertStyle(cp),
+			name:        r.Name,
+			fileGroup:   r.FileGroup,
+			lineGroup:   r.LineGroup,
+			columnGroup: r.ColumnGroup,
 		})
 		pairs = append(pairs, cp)
 	}
 	return out, pairs
+}
+
+func atoiSafe(s string) (int, bool) {
+	n, err := strconv.Atoi(s)
+	return n, err == nil
 }
 
 func buildLineInfo(line string, rules []compiledRule) lineInfo {
@@ -432,50 +490,89 @@ func buildLineInfo(line string, rules []compiledRule) lineInfo {
 		return li
 	}
 
+	// For highlighting, we still need merged spans per rule over bytes
 	type rawSpan struct{ start, end, rule int }
 	var raw []rawSpan
+
 	for ri, cr := range rules {
-		for _, p := range cr.re.FindAllStringIndex(line, -1) {
-			raw = append(raw, rawSpan{p[0], p[1], ri})
-			li.matchesText = append(li.matchesText, line[p[0]:p[1]])
+		// Use Submatch so we can extract file/line/column if configured
+		all := cr.re.FindAllStringSubmatchIndex(line, -1)
+		for _, idx := range all {
+			// idx: [fullStart, fullEnd, g1s, g1e, g2s, g2e, ...]
+			if len(idx) < 2 {
+				continue
+			}
+			fullStart, fullEnd := idx[0], idx[1]
+			raw = append(raw, rawSpan{start: fullStart, end: fullEnd, rule: ri})
+
+			md := matchDetail{start: fullStart, end: fullEnd, rule: ri, text: line[fullStart:fullEnd]}
+
+			if cr.fileGroup > 0 {
+				gi := 2 * cr.fileGroup
+				if gi+1 < len(idx) && idx[gi] >= 0 && idx[gi+1] >= 0 {
+					md.file = line[idx[gi]:idx[gi+1]]
+					if md.file != "" {
+						md.hasF = true
+					}
+				}
+			}
+			if cr.lineGroup > 0 {
+				gi := 2 * cr.lineGroup
+				if gi+1 < len(idx) && idx[gi] >= 0 && idx[gi+1] >= 0 {
+					if n, ok := atoiSafe(line[idx[gi]:idx[gi+1]]); ok {
+						md.line, md.hasL = n, true
+					}
+				}
+			}
+			if cr.columnGroup > 0 {
+				gi := 2 * cr.columnGroup
+				if gi+1 < len(idx) && idx[gi] >= 0 && idx[gi+1] >= 0 {
+					if n, ok := atoiSafe(line[idx[gi]:idx[gi+1]]); ok {
+						md.column, md.hasC = n, true
+					}
+				}
+			}
+
+			li.matches = append(li.matches, md)
 		}
-	}
-	if len(raw) == 0 {
-		return li
 	}
 
-	b := []byte(line)
-	owner := make([]int, len(b))
-	for i := range owner {
-		owner[i] = -1
+	// Build merged spans for highlighting by rule ownership
+	if len(raw) > 0 {
+		b := []byte(line)
+		owner := make([]int, len(b))
+		for i := range owner {
+			owner[i] = -1
+		}
+		for _, rs := range raw {
+			if rs.start < 0 {
+				rs.start = 0
+			}
+			if rs.end > len(b) {
+				rs.end = len(b)
+			}
+			if rs.start >= rs.end {
+				continue
+			}
+			for i := rs.start; i < rs.end; i++ {
+				owner[i] = rs.rule
+			}
+		}
+		for i := 0; i < len(owner); {
+			if owner[i] == -1 {
+				i++
+				continue
+			}
+			rule := owner[i]
+			j := i + 1
+			for j < len(owner) && owner[j] == rule {
+				j++
+			}
+			li.spans = append(li.spans, matchSpan{start: i, end: j, rule: rule})
+			i = j
+		}
 	}
-	for _, rs := range raw {
-		if rs.start < 0 {
-			rs.start = 0
-		}
-		if rs.end > len(b) {
-			rs.end = len(b)
-		}
-		if rs.start >= rs.end {
-			continue
-		}
-		for i := rs.start; i < rs.end; i++ {
-			owner[i] = rs.rule
-		}
-	}
-	for i := 0; i < len(owner); {
-		if owner[i] == -1 {
-			i++
-			continue
-		}
-		rule := owner[i]
-		j := i + 1
-		for j < len(owner) && owner[j] == rule {
-			j++
-		}
-		li.spans = append(li.spans, matchSpan{start: i, end: j, rule: rule})
-		i = j
-	}
+
 	return li
 }
 
@@ -491,10 +588,10 @@ func precompute(lines []string, rules []compiledRule) preScan {
 	for i, ln := range lines {
 		li := buildLineInfo(ln, rules)
 		ps.info[i] = li
-		if len(li.spans) > 0 {
+		if len(li.matches) > 0 {
 			ps.matchLines = append(ps.matchLines, i)
 		}
-		ps.totalMatches += len(li.matchesText)
+		ps.totalMatches += len(li.matches)
 	}
 	return ps
 }
@@ -603,6 +700,93 @@ type Output struct {
 }
 
 /* =========================
+   EDIT helpers
+   ========================= */
+
+func launchEditorForMatch(cfg Config, md matchDetail, source SourceInfo, addErr func(string)) {
+	env := map[string]string{}
+	if md.hasF {
+		env["__FILE__"] = md.file
+	}
+	if md.hasL {
+		env["__LINE__"] = strconv.Itoa(md.line)
+	}
+	if md.hasC {
+		env["__COLUMN__"] = strconv.Itoa(md.column)
+	}
+
+	var argv []string
+	switch {
+	case md.hasF && md.hasL && md.hasC && len(cfg.Editors.FileLineCol) > 0:
+		argv = cfg.Editors.FileLineCol
+	case md.hasF && md.hasL && len(cfg.Editors.FileLine) > 0:
+		argv = cfg.Editors.FileLine
+	case md.hasF && len(cfg.Editors.File) > 0:
+		argv = cfg.Editors.File
+	default:
+		// Fallback to JSON
+		path, f, err := makeTempJSON()
+		if err != nil {
+			addErr("edit: temp json create failed: " + err.Error())
+			return
+		}
+		rec := Output{
+			Line:       md.text,
+			Matches:    []string{md.text},
+			LineNumber: 0,
+			Source:     source,
+		}
+		enc := json.NewEncoder(f)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(rec); err != nil {
+			_ = f.Close()
+			_ = os.Remove(path)
+			addErr("edit: write json failed: " + err.Error())
+			return
+		}
+		_ = f.Close()
+		env["__JSON__"] = path
+		argv = cfg.Editors.Fallback
+		if len(argv) == 0 {
+			addErr("edit: no fallback editor defined")
+			return
+		}
+	}
+
+	finalArgv := expandArgsWithEnv(argv, env, "")
+	if len(finalArgv) == 0 {
+		addErr("edit: empty editor argv")
+		return
+	}
+	if *flagSpawnDryRun {
+		pretty := strings.Join(finalArgv, " ")
+		if len(pretty) > 120 && len(finalArgv) >= 2 {
+			pretty = shellQuote(finalArgv[0]) + " … " + shellQuote(finalArgv[len(finalArgv)-1])
+		}
+		addErr("edit (dry-run): " + pretty)
+		return
+	}
+
+	cmd := exec.Command(finalArgv[0], finalArgv[1:]...)
+	cmd.Env = append(os.Environ(), envToList(env)...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		addErr("edit: spawn failed: " + err.Error())
+		return
+	}
+	_ = cmd.Process.Release()
+	addErr(fmt.Sprintf("edit: spawned pid %d", cmd.Process.Pid))
+}
+
+func envToList(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k, v := range m {
+		out = append(out, k+"="+v)
+	}
+	return out
+}
+
+/* =========================
    TUI
    ========================= */
 
@@ -637,7 +821,6 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 	}
 	addErr := func(msg string) {
 		*errPanel = append(*errPanel, msg)
-		// keep panel buffer bounded so it doesn't grow unbounded during long runs
 		if errLinesMax > 0 && len(*errPanel) > errLinesMax*4 {
 			keep := errLinesMax * 2
 			if keep < errLinesMax {
@@ -745,44 +928,66 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 	}
 
 	spawnCurrent := func(idx int) {
-		if strings.ToLower(cfg.Action) != "spawn" {
-			return
+		rec := Output{Line: lines[idx], Matches: nil, LineNumber: idx + 1, Source: source}
+		for _, m := range info[idx].matches {
+			rec.Matches = append(rec.Matches, m.text)
 		}
-		rec := Output{Line: lines[idx], Matches: info[idx].matchesText, LineNumber: idx + 1, Source: source}
-		path, f, err := makeTempJSON()
-		if err != nil {
-			addErr("temp file create failed: " + err.Error())
-			return
-		}
-		enc := json.NewEncoder(f)
-		enc.SetEscapeHTML(false)
-		if err := enc.Encode(rec); err != nil {
-			_ = f.Close()
-			_ = os.Remove(path)
-			addErr("write json failed: " + err.Error())
-			return
-		}
-		_ = f.Close()
 
-		argv := expandArgs(cfg.Command, path)
-		if *flagSpawnDryRun {
-			pretty := strings.Join(argv, " ")
-			if len(pretty) > 120 && len(argv) >= 2 {
-				pretty = shellQuote(argv[0]) + " … " + shellQuote(argv[len(argv)-1])
+		if strings.ToLower(cfg.Action) == "spawn" {
+			path, f, err := makeTempJSON()
+			if err != nil {
+				addErr("temp file create failed: " + err.Error())
+				return
 			}
-			addErr("spawn (dry-run): " + pretty)
-			_ = os.Remove(path)
-			return
+			enc := json.NewEncoder(f)
+			enc.SetEscapeHTML(false)
+			if err := enc.Encode(rec); err != nil {
+				_ = f.Close()
+				_ = os.Remove(path)
+				addErr("write json failed: " + err.Error())
+				return
+			}
+			_ = f.Close()
+
+			argv := expandArgsWithEnv(cfg.Command, map[string]string{}, path)
+			if len(argv) == 0 {
+				addErr("spawn: empty argv")
+				return
+			}
+			if *flagSpawnDryRun {
+				pretty := strings.Join(argv, " ")
+				if len(pretty) > 120 && len(argv) >= 2 {
+					pretty = shellQuote(argv[0]) + " … " + shellQuote(argv[len(argv)-1])
+				}
+				addErr("spawn (dry-run): " + pretty)
+				_ = os.Remove(path)
+				return
+			}
+			cmd := exec.Command(argv[0], argv[1:]...)
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			if err := cmd.Start(); err != nil {
+				addErr("spawn failed: " + err.Error())
+				_ = os.Remove(path)
+				return
+			}
+			_ = cmd.Process.Release()
+			addErr(fmt.Sprintf("spawned: pid %d  file %s", cmd.Process.Pid, path))
 		}
-		cmd := exec.Command(argv[0], argv[1:]...)
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		if err := cmd.Start(); err != nil {
-			addErr("spawn failed: " + err.Error())
-			_ = os.Remove(path)
-			return
+	}
+
+	editCurrent := func(idx int) {
+		matches := info[idx].matches
+		switch len(matches) {
+		case 0:
+			// no structured match; use fallback editor with JSON of full line
+			md := matchDetail{text: lines[idx]}
+			launchEditorForMatch(cfg, md, source, addErr)
+		case 1:
+			launchEditorForMatch(cfg, matches[0], source, addErr)
+		default:
+			// for now, single-match only per request; notify
+			addErr("edit: multiple matches on line; numeric selection not implemented yet")
 		}
-		_ = cmd.Process.Release()
-		addErr(fmt.Sprintf("spawned: pid %d  file %s", cmd.Process.Pid, path))
 	}
 
 	drawContentLine := func(rowY, lineIdx, width int, isSel bool) {
@@ -807,7 +1012,6 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		// content with painted spans
 		avail := max(0, width-contentLeft)
 		if avail <= 0 {
-			// blank to EOL to avoid remnants
 			for xx := x; xx < width; xx++ {
 				s.SetContent(xx, rowY, ' ', nil, rowStyle)
 			}
@@ -825,7 +1029,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 				break
 			}
 			rStart := bytePos
-			bytePos += utf8.RuneLen(r) // accurate byte step
+			bytePos += utf8.RuneLen(r)
 			for curSpan != nil && rStart >= curSpan.end && spanIdx+1 < len(li.spans) {
 				spanIdx++
 				curSpan = &li.spans[spanIdx]
@@ -844,7 +1048,6 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 			s.SetContent(col, rowY, r, nil, st)
 			col++
 		}
-		// blank to EOL so shorter lines don't leave remnants
 		for xx := col; xx < width; xx++ {
 			s.SetContent(xx, rowY, ' ', nil, rowStyle)
 		}
@@ -904,7 +1107,13 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		fillRow(statusRow, statusStyle)
 		lineNum := clamp(cursor+1, 1, len(lines))
 		charCount := utf8.RuneCountInString(lines[cursor])
-		actionLabel := map[bool]string{true: "spawn", false: "select"}[strings.ToLower(cfg.Action) == "spawn"]
+		actionLabel := "select"
+		switch strings.ToLower(cfg.Action) {
+		case "spawn":
+			actionLabel = "spawn"
+		case "edit":
+			actionLabel = "edit"
+		}
 		status := fmt.Sprintf(" %d/%d  |  chars: %d  |  ↑/↓ PgUp/PgDn Home/End  Enter=%s  q/Esc=quit ",
 			lineNum, len(lines), charCount, actionLabel)
 		putStr(0, statusRow, statusStyle, ellipsis(status, w), -1)
@@ -927,13 +1136,23 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		case *tcell.EventKey:
 			switch e.Key() {
 			case tcell.KeyEnter:
-				if strings.ToLower(cfg.Action) == "spawn" {
+				switch strings.ToLower(cfg.Action) {
+				case "spawn":
 					spawnCurrent(cursor)
 					ensureCursorVisible()
 					draw()
-					break
+				case "edit":
+					editCurrent(cursor)
+					ensureCursorVisible()
+					draw()
+				default: // print
+					// assemble matches text for output
+					mt := []string{}
+					for _, m := range info[cursor].matches {
+						mt = append(mt, m.text)
+					}
+					return lines[cursor], mt, cursor + 1, true, len(matchLines), totalMatches
 				}
-				return lines[cursor], info[cursor].matchesText, cursor + 1, true, len(matchLines), totalMatches
 			case tcell.KeyEscape:
 				return "", nil, 0, false, len(matchLines), totalMatches
 			case tcell.KeyUp:
@@ -1033,9 +1252,9 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 		fmt.Fprintln(outf, raw)      // capture
 		lines = append(lines, raw)
 		li := buildLineInfo(raw, cRules)
-		if len(li.spans) > 0 {
+		if len(li.matches) > 0 {
 			matchLines = append(matchLines, lineNo)
-			totalMatches += len(li.matchesText)
+			totalMatches += len(li.matches)
 		}
 		lineNo++
 	}
@@ -1066,7 +1285,12 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 			enc.SetEscapeHTML(false)
 			src := SourceInfo{Kind: "pipe"}
 			for _, i := range ps.matchLines {
-				rec := Output{Line: ps.lines[i], Matches: ps.info[i].matchesText, LineNumber: i + 1, Source: src}
+				// assemble matches text
+				mt := []string{}
+				for _, m := range ps.info[i].matches {
+					mt = append(mt, m.text)
+				}
+				rec := Output{Line: ps.lines[i], Matches: mt, LineNumber: i + 1, Source: src}
 				if err := enc.Encode(rec); err != nil {
 					return err
 				}
@@ -1088,7 +1312,11 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 		enc.SetEscapeHTML(false)
 		src := SourceInfo{Kind: "pipe"}
 		for _, i := range ps.matchLines {
-			rec := Output{Line: ps.lines[i], Matches: ps.info[i].matchesText, LineNumber: i + 1, Source: src}
+			mt := []string{}
+			for _, m := range ps.info[i].matches {
+				mt = append(mt, m.text)
+			}
+			rec := Output{Line: ps.lines[i], Matches: mt, LineNumber: i + 1, Source: src}
 			if err := enc.Encode(rec); err != nil {
 				_ = wc.Close()
 				return err
@@ -1102,7 +1330,7 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 
 	src := SourceInfo{Kind: "pipe"}
 	var panel []string
-	lineText, matches, lineNum, ok, _, _ := runListUIWithRules(ps, cfg, src, rulePairs, errLinesMax, &panel)
+	lineText, matchesText, lineNum, ok, _, _ := runListUIWithRules(ps, cfg, src, rulePairs, errLinesMax, &panel)
 
 	// replay error panel after exit
 	if len(panel) > 0 {
@@ -1116,7 +1344,7 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 		out := Output{Source: src}
 		if ok {
 			out.Line = strings.TrimRightFunc(lineText, func(r rune) bool { return r == '\r' })
-			out.Matches = matches
+			out.Matches = matchesText
 			out.LineNumber = lineNum
 		} else {
 			out.Line = ""
@@ -1226,7 +1454,7 @@ func main() {
 	}
 
 	cfg.Action = strings.ToLower(strings.TrimSpace(cfg.Action))
-	if cfg.Action != "print" && cfg.Action != "spawn" {
+	if cfg.Action != "print" && cfg.Action != "spawn" && cfg.Action != "edit" {
 		cfg.Action = "print"
 	}
 	if cfg.Cleanup.AgeMinutes <= 0 {
@@ -1321,7 +1549,11 @@ func main() {
 		enc := json.NewEncoder(wc)
 		enc.SetEscapeHTML(false)
 		for _, i := range ps.matchLines {
-			rec := Output{Line: ps.lines[i], Matches: ps.info[i].matchesText, LineNumber: i + 1, Source: source}
+			mt := []string{}
+			for _, m := range ps.info[i].matches {
+				mt = append(mt, m.text)
+			}
+			rec := Output{Line: ps.lines[i], Matches: mt, LineNumber: i + 1, Source: source}
 			if err := enc.Encode(rec); err != nil {
 				_ = wc.Close()
 				log.Fatalf("json encode error: %v", err)
@@ -1335,7 +1567,7 @@ func main() {
 
 	// TUI
 	var panel []string
-	lineText, matches, lineNum, ok, _, _ := runListUIWithRules(ps, cfg, source, rulePairs, effectiveErrLines, &panel)
+	lineText, matchesText, lineNum, ok, _, _ := runListUIWithRules(ps, cfg, source, rulePairs, effectiveErrLines, &panel)
 
 	// replay panel after exit
 	if len(panel) > 0 {
@@ -1350,7 +1582,7 @@ func main() {
 		out := Output{Source: source}
 		if ok {
 			out.Line = strings.TrimRightFunc(lineText, func(r rune) bool { return r == '\r' })
-			out.Matches = matches
+			out.Matches = matchesText
 			out.LineNumber = lineNum
 		} else {
 			out.Line = ""
