@@ -828,7 +828,16 @@ func launchEditorForMatch(cfg Config, md matchDetail, source SourceInfo, line st
 		return
 	}
 	_ = cmd.Process.Release()
-	addErr(fmt.Sprintf("edit: spawned pid %d", cmd.Process.Pid))
+	// show argv and json basename if used
+	argvShown := make([]string, len(finalArgv))
+	for i, a := range finalArgv {
+		argvShown[i] = shellQuote(a)
+	}
+	msg := "edit: exec: " + strings.Join(argvShown, " ")
+	if jp, ok := env["__JSON__"]; ok && jp != "" {
+		msg += "  (json: " + filepath.Base(jp) + ")"
+	}
+	addErr(msg)
 }
 
 func envToList(m map[string]string) []string {
@@ -1011,7 +1020,11 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 			return
 		}
 		_ = cmd.Process.Release()
-		addErr(fmt.Sprintf("edit-json: spawned pid %d", cmd.Process.Pid))
+		argvShown := make([]string, len(final))
+		for i, a := range final {
+			argvShown[i] = shellQuote(a)
+		}
+		addErr("edit-json: exec: " + strings.Join(argvShown, " ") + "  (json: " + filepath.Base(jsonPath) + ")")
 	}
 
 	editCurrent := func(idx int) {
@@ -1151,7 +1164,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		origNum := origIdx[cursor] + 1
 		charCount := utf8.RuneCountInString(lines[cursor])
 		base := "Enter=" + strings.ToLower(cfg.Action)
-		help := "  e/E=edit  j/J=edit-json  q/Esc=quit"
+		help := "  e/E=edit  [1-9,0]=choose-match  j/J=edit-json  q/Esc=quit"
 		status := fmt.Sprintf(" %d/%d (orig #%d) | chars: %d | ↑/↓ PgUp/PgDn Home/End  %s %s ",
 			cursor+1, len(lines), origNum, charCount, base, help)
 		putStr(0, statusRow, statusStyle, ellipsis(status, w), -1)
@@ -1260,6 +1273,44 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 					if prevMatch() {
 						ensureCursorVisible()
 						draw()
+					}
+				case '1', '2', '3', '4', '5', '6', '7', '8', '9', '0':
+					// numeric match selection: 1..9 -> 0..8, 0 -> 9
+					ms := info[cursor].matches
+					if len(ms) > 1 {
+						var pick int
+						switch e.Rune() {
+						case '1':
+							pick = 0
+						case '2':
+							pick = 1
+						case '3':
+							pick = 2
+						case '4':
+							pick = 3
+						case '5':
+							pick = 4
+						case '6':
+							pick = 5
+						case '7':
+							pick = 6
+						case '8':
+							pick = 7
+						case '9':
+							pick = 8
+						case '0':
+							pick = 9
+						}
+						if pick >= 0 && pick < len(ms) {
+							orig := origIdx[cursor] + 1
+							mt := []string{}
+							for _, m := range ms {
+								mt = append(mt, m.text)
+							}
+							launchEditorForMatch(cfg, ms[pick], source, lines[cursor], mt, orig, addErr)
+							ensureCursorVisible()
+							draw()
+						}
 					}
 				}
 			}
