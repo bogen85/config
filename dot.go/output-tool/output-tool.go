@@ -169,7 +169,7 @@ func shellQuote(arg string) string {
 	}
 	need := false
 	for _, r := range arg {
-		if r <= 0x20 || strings.ContainsRune(`'"$\`+"`*?[]{}<>|&;()!", r) {
+		if r <= 0x20 || strings.ContainsRune(`'\"$\\`+"`*?[]{}<>|&;()!", r) {
 			need = true
 			break
 		}
@@ -187,6 +187,17 @@ func expandArgs(argv []string, path string) []string {
 		out = append(out, a)
 	}
 	return out
+}
+
+// sanitize: drop control chars except tab to avoid rendering artifacts
+func sanitize(s string) string {
+	var b []rune
+	for _, r := range s {
+		if r == '\t' || r >= 0x20 {
+			b = append(b, r)
+		}
+	}
+	return string(b)
 }
 
 /* =========================
@@ -228,7 +239,7 @@ func readLines(path string) ([]string, error) {
 	const maxCap = 10 * 1024 * 1024
 	sc.Buffer(make([]byte, 0, 64*1024), maxCap)
 	for sc.Scan() {
-		lines = append(lines, sc.Text())
+		lines = append(lines, sanitize(sc.Text()))
 	}
 	return lines, sc.Err()
 }
@@ -252,7 +263,12 @@ func readPrimaryWithXclip() (string, error) {
 func splitLines(s string) []string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "\n")
-	return strings.Split(s, "\n")
+	raw := strings.Split(s, "\n")
+	out := make([]string, 0, len(raw))
+	for _, ln := range raw {
+		out = append(out, sanitize(ln))
+	}
+	return out
 }
 
 func defaultConfigPath() (string, error) {
@@ -620,7 +636,15 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		errPanel = &tmp
 	}
 	addErr := func(msg string) {
-		*errPanel = append(*errPanel, msg) // buffer only; no stderr during TUI
+		*errPanel = append(*errPanel, msg)
+		// keep panel buffer bounded so it doesn't grow unbounded during long runs
+		if errLinesMax > 0 && len(*errPanel) > errLinesMax*4 {
+			keep := errLinesMax * 2
+			if keep < errLinesMax {
+				keep = errLinesMax
+			}
+			*errPanel = append([]string(nil), (*errPanel)[len(*errPanel)-keep:]...)
+		}
 		s.PostEvent(tcell.NewEventInterrupt(nil))
 	}
 	getErrH := func() int {
@@ -635,6 +659,27 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 			return errLinesMax
 		}
 		return n
+	}
+
+	ellipsis := func(str string, maxw int) string {
+		if maxw <= 0 {
+			return ""
+		}
+		w := 0
+		var b strings.Builder
+		for _, r := range str {
+			if w+1 >= maxw {
+				b.WriteRune('…')
+				return b.String()
+			}
+			b.WriteRune(r)
+			w++
+		}
+		for w < maxw {
+			b.WriteByte(' ')
+			w++
+		}
+		return b.String()
 	}
 
 	cursor, offset := 0, 0
@@ -721,11 +766,11 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 
 		argv := expandArgs(cfg.Command, path)
 		if *flagSpawnDryRun {
-			parts := make([]string, 0, len(argv))
-			for _, a := range argv {
-				parts = append(parts, shellQuote(a))
+			pretty := strings.Join(argv, " ")
+			if len(pretty) > 120 && len(argv) >= 2 {
+				pretty = shellQuote(argv[0]) + " … " + shellQuote(argv[len(argv)-1])
 			}
-			addErr("spawn (dry-run): " + strings.Join(parts, " "))
+			addErr("spawn (dry-run): " + pretty)
 			_ = os.Remove(path)
 			return
 		}
@@ -762,6 +807,10 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		// content with painted spans
 		avail := max(0, width-contentLeft)
 		if avail <= 0 {
+			// blank to EOL to avoid remnants
+			for xx := x; xx < width; xx++ {
+				s.SetContent(xx, rowY, ' ', nil, rowStyle)
+			}
 			return
 		}
 		li := info[lineIdx]
@@ -776,7 +825,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 				break
 			}
 			rStart := bytePos
-			bytePos += len(string(r))
+			bytePos += utf8.RuneLen(r) // accurate byte step
 			for curSpan != nil && rStart >= curSpan.end && spanIdx+1 < len(li.spans) {
 				spanIdx++
 				curSpan = &li.spans[spanIdx]
@@ -795,9 +844,16 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 			s.SetContent(col, rowY, r, nil, st)
 			col++
 		}
+		// blank to EOL so shorter lines don't leave remnants
+		for xx := col; xx < width; xx++ {
+			s.SetContent(xx, rowY, ' ', nil, rowStyle)
+		}
 	}
 
 	draw := func() {
+		// force full refresh like a resize would
+		s.Sync()
+
 		s.Clear()
 		w, h := s.Size()
 		if h <= 0 {
@@ -811,7 +867,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		fillRow(0, topStyle)
 		topMsg := fmt.Sprintf(" input:%s  action:%s  match-lines:%d  matches:%d  |  n:next  N:prev ",
 			source.Kind, strings.ToLower(cfg.Action), len(matchLines), totalMatches)
-		putStr(0, 0, topStyle, topMsg, -1)
+		putStr(0, 0, topStyle, ellipsis(topMsg, w), -1)
 
 		// content
 		for row := 0; row < usable; row++ {
@@ -837,7 +893,8 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 			}
 			y := startY
 			for i := first; i < n; i++ {
-				putStr(0, y, errStyle, msgs[i], -1)
+				line := ellipsis(msgs[i], w)
+				putStr(0, y, errStyle, line, -1)
 				y++
 			}
 		}
@@ -850,7 +907,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		actionLabel := map[bool]string{true: "spawn", false: "select"}[strings.ToLower(cfg.Action) == "spawn"]
 		status := fmt.Sprintf(" %d/%d  |  chars: %d  |  ↑/↓ PgUp/PgDn Home/End  Enter=%s  q/Esc=quit ",
 			lineNum, len(lines), charCount, actionLabel)
-		putStr(0, statusRow, statusStyle, status, -1)
+		putStr(0, statusRow, statusStyle, ellipsis(status, w), -1)
 
 		s.Show()
 	}
@@ -971,7 +1028,7 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 	totalMatches, lineNo := 0, 0
 
 	for in.Scan() {
-		raw := in.Text()
+		raw := sanitize(in.Text())
 		fmt.Fprintln(os.Stdout, raw) // passthrough
 		fmt.Fprintln(outf, raw)      // capture
 		lines = append(lines, raw)
