@@ -437,6 +437,11 @@ func runListUI(lines []string, cfg Config) (string, bool) {
 	}
 }
 
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func main() {
 	filePath := flag.String("file", "", "path to a UTF-8 text file (one entry per line)")
 	configPath := flag.String("config", "", "path to a config TOML (use ::default:: for per-user default path)")
@@ -445,13 +450,13 @@ func main() {
 	primary := flag.Bool("primary", false, "use PRIMARY selection via xclip as input (mutually exclusive with --file)")
 	flag.Parse()
 
-	// Validate mutual exclusions for this step:
 	if *outputDefault {
 		if *filePath != "" {
 			fmt.Fprintln(os.Stderr, "error: --file cannot be used with --output-default-config")
 			os.Exit(2)
 		}
-		// Where to write defaults?
+
+		// Resolve target
 		var outPath string
 		if *configPath == "::default::" {
 			dp, err := defaultConfigPath()
@@ -463,18 +468,34 @@ func main() {
 			outPath = *configPath // may be empty => stdout
 		}
 
-		// If writing to a file, guard overwrites.
-		if outPath != "" {
-			if _, err := os.Stat(outPath); err == nil && !*force {
-				// Confirm via tcell dialog
-				if !confirmOverwriteDialog(outPath) {
-					// user declined
-					return
-				}
+		// stdout case: just emit TOML, no extra messages
+		if outPath == "" {
+			if err := writeDefaultConfigTo("", *force); err != nil {
+				log.Fatalf("failed to write default config: %v", err)
+			}
+			return
+		}
+
+		existed := fileExists(outPath)
+
+		// If target exists and no --force, ask user
+		if existed && !*force {
+			if !confirmOverwriteDialog(outPath) {
+				// User canceled — report and exit
+				fmt.Fprintf(os.Stderr, "cancelled: did not overwrite %s\n", outPath)
+				return
 			}
 		}
+
 		if err := writeDefaultConfigTo(outPath, *force); err != nil {
 			log.Fatalf("failed to write default config: %v", err)
+		}
+
+		// Report outcome
+		if existed {
+			fmt.Printf("overwrote config: %s\n", outPath)
+		} else {
+			fmt.Printf("wrote config: %s\n", outPath)
 		}
 		return
 	}
