@@ -45,10 +45,14 @@ type CleanupCfg struct {
 	AgeMinutes int  `toml:"age_minutes"`
 }
 
+type UICfg struct {
+	ErrLinesMax int `toml:"err_lines_max"` // max height for error panel; 0 disables
+}
+
 type Config struct {
-	// Global action on Enter inside TUI: "print" or "spawn"
+	// Action on Enter in TUI: "print" | "spawn"
 	Action  string   `toml:"action"`
-	Command []string `toml:"command"` // argv, supports ${VAR} and "<path>"
+	Command []string `toml:"command"` // argv; supports ${VAR} and "<path>"
 
 	Colors struct {
 		Normal          ColorPair `toml:"normal"`
@@ -57,41 +61,38 @@ type Config struct {
 		GutterHighlight ColorPair `toml:"gutter_highlight"`
 		Status          ColorPair `toml:"status"`     // bottom status bar
 		TopStatus       ColorPair `toml:"top_status"` // top bar
-		ErrPanel        ColorPair `toml:"err_panel"`  // error panel bg/fg
+		ErrPanel        ColorPair `toml:"err_panel"`  // error panel
 	} `toml:"colors"`
 
 	Rules   []Rule     `toml:"rules"`
 	Cleanup CleanupCfg `toml:"cleanup"`
+	UI      UICfg      `toml:"ui"`
 }
 
 func defaultConfig() Config {
 	var c Config
-
-	// Default to print; set "spawn" in your config to use the external command
+	// default behavior: print json on Enter
 	c.Action = "print"
 	c.Command = []string{"xfce4-terminal", "--window", "--working-directory=${PWD}", "--execute", "less", "<path>"}
 
+	// colors (names or #rrggbb or palette:N)
 	c.Colors.Normal = ColorPair{FG: "white", BG: "black"}
 	c.Colors.Highlight = ColorPair{FG: "black", BG: "white"}
 	c.Colors.Gutter = ColorPair{FG: "gray", BG: "black"}
 	c.Colors.GutterHighlight = ColorPair{FG: "black", BG: "white"}
-	c.Colors.Status = ColorPair{FG: "#000000", BG: "#ffff00"}    // bottom
-	c.Colors.TopStatus = ColorPair{FG: "#000000", BG: "#ff00ff"} // top
-	c.Colors.ErrPanel = ColorPair{FG: "#ffffff", BG: "#303030"}  // error window
+	c.Colors.Status = ColorPair{FG: "#000000", BG: "#ffff00"}
+	c.Colors.TopStatus = ColorPair{FG: "#000000", BG: "#ff00ff"}
+	c.Colors.ErrPanel = ColorPair{FG: "#ffffff", BG: "#303030"}
 
-	// Default rule: POSIX-ish path:line:col
+	// default rule: path:line:col (gcc/go-style)
 	c.Rules = []Rule{
-		{
-			Name:  "path:line:col",
-			Regex: `(?:\.\.?/)?[A-Za-z0-9._/\-]+:\d+:\d+`,
-			FG:    "black",
-			BG:    "green",
-		},
+		{Name: "path:line:col", Regex: `(?:\.\.?/)?[A-Za-z0-9._/\-]+:\d+:\d+`, FG: "black", BG: "green"},
 	}
 
-	// Default cleanup: enabled, 60 minutes
+	// cleanup & UI defaults
 	c.Cleanup.Enabled = true
 	c.Cleanup.AgeMinutes = 60
+	c.UI.ErrLinesMax = 5
 
 	return c
 }
@@ -101,19 +102,22 @@ func defaultConfig() Config {
    ========================= */
 
 var (
-	flagFile          = flag.String("file", "", "path to a UTF-8 text file (one entry per line)")
-	flagConfig        = flag.String("config", "", "path to a config TOML (use ::default:: for per-user default path)")
+	flagFile          = flag.String("file", "", "path to UTF-8 text file (one entry per line)")
+	flagConfig        = flag.String("config", "", "path to config TOML (use ::default:: for per-user default path)")
 	flagOutputDefault = flag.Bool("output-default-config", false, "print or write a default config TOML and exit")
 	flagForce         = flag.Bool("force", false, "allow overwriting existing config when outputting defaults")
+
 	flagPrimary       = flag.Bool("primary", false, "use PRIMARY selection via xclip as input (mutually exclusive with --file/--pipe)")
 	flagPipe          = flag.Bool("pipe", false, "read from stdin, pass-through to stdout in real time, then optionally open TUI")
 	flagOnlyOnMatches = flag.Bool("only-on-matches", false, "if there are no matches, exit without opening the TUI")
-	flagJSONMatches   = flag.Bool("json-matches", false, "emit NDJSON records for each matching line (pre-TUI/quasi-print)")
-	flagJSONDest      = flag.String("json-dest", "stderr", "destination for NDJSON: stderr|stdout|/path/to/file")
-	flagNoTUI         = flag.Bool("no-tui", false, "when emitting NDJSON, skip opening the TUI and exit")
-	flagErrLinesMax   = flag.Int("err-lines", 5, "maximum lines for bottom error panel (0 to disable)")
-	flagSpawnDryRun   = flag.Bool("spawn-dry-run", false, "do not spawn; log the would-be command (with <path>) to the error panel")
-	flagCleanupNow    = flag.Bool("cleanup-orphaned", false, "perform orphaned temp-file cleanup at startup (uses config.age_minutes)")
+	flagJSONMatches   = flag.Bool("json-matches", false, "emit NDJSON for each matching line (pre-TUI/quasi-print)")
+	flagJSONDest      = flag.String("json-dest", "stderr", "NDJSON destination: stderr|stdout|/path/to/file")
+	flagNoTUI         = flag.Bool("no-tui", false, "when emitting NDJSON, skip TUI and exit")
+
+	flagErrLinesMax = flag.Int("err-lines", 5, "max lines for bottom error panel (0 disables)")
+	flagSpawnDryRun = flag.Bool("spawn-dry-run", false, "do not spawn; log argv with <path> substituted to the error panel")
+
+	flagCleanupNow = flag.Bool("cleanup-orphaned", false, "cleanup old temp files at startup (uses config.cleanup.age_minutes)")
 )
 
 /* =========================
@@ -146,9 +150,43 @@ func max(a, b int) int {
 	}
 	return b
 }
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
+func fileExists(path string) bool { _, err := os.Stat(path); return err == nil }
+func pathExists(p string) bool    { _, err := os.Stat(p); return err == nil }
+func exeBase() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "output-tool"
+	}
+	return filepath.Base(exe)
+}
+func tempBase() string            { return filepath.Join(os.TempDir(), exeBase()) }
+func tempRoot() string            { return filepath.Join(tempBase(), fmt.Sprintf("%d", os.Getpid())) }
+func ensureDir(path string) error { return os.MkdirAll(filepath.Dir(path), 0o755) }
+func expandArg(s string) string   { return os.Expand(s, func(k string) string { return os.Getenv(k) }) }
+func shellQuote(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	need := false
+	for _, r := range arg {
+		if r <= 0x20 || strings.ContainsRune(`'"$\`+"`*?[]{}<>|&;()!", r) {
+			need = true
+			break
+		}
+	}
+	if !need {
+		return arg
+	}
+	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
+}
+func expandArgs(argv []string, path string) []string {
+	out := make([]string, 0, len(argv))
+	for _, a := range argv {
+		a = strings.ReplaceAll(a, "<path>", path)
+		a = expandArg(a)
+		out = append(out, a)
+	}
+	return out
 }
 
 /* =========================
@@ -161,8 +199,7 @@ func parseColor(s string) tcell.Color {
 		return tcell.ColorReset
 	}
 	if strings.HasPrefix(s, "palette:") {
-		nStr := strings.TrimPrefix(s, "palette:")
-		if n, err := strconv.Atoi(nStr); err == nil && n >= 0 && n <= 255 {
+		if n, err := strconv.Atoi(strings.TrimPrefix(s, "palette:")); err == nil && n >= 0 && n <= 255 {
 			return tcell.PaletteColor(n)
 		}
 	}
@@ -170,14 +207,10 @@ func parseColor(s string) tcell.Color {
 }
 
 func styleFrom(p ColorPair) tcell.Style {
-	return tcell.StyleDefault.
-		Foreground(parseColor(p.FG)).
-		Background(parseColor(p.BG))
+	return tcell.StyleDefault.Foreground(parseColor(p.FG)).Background(parseColor(p.BG))
 }
 func invertStyle(p ColorPair) tcell.Style {
-	return tcell.StyleDefault.
-		Foreground(parseColor(p.BG)).
-		Background(parseColor(p.FG))
+	return tcell.StyleDefault.Foreground(parseColor(p.BG)).Background(parseColor(p.FG))
 }
 
 /* =========================
@@ -193,8 +226,7 @@ func readLines(path string) ([]string, error) {
 	var lines []string
 	sc := bufio.NewScanner(f)
 	const maxCap = 10 * 1024 * 1024
-	buf := make([]byte, 0, 64*1024)
-	sc.Buffer(buf, maxCap)
+	sc.Buffer(make([]byte, 0, 64*1024), maxCap)
 	for sc.Scan() {
 		lines = append(lines, sc.Text())
 	}
@@ -210,10 +242,10 @@ func readPrimaryWithXclip() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading PRIMARY via xclip failed: %w", err)
 	}
-	// Clear PRIMARY
+	// clear PRIMARY (best effort)
 	cmd := exec.Command("xclip", "-selection", "primary", "-in")
 	cmd.Stdin = bytes.NewReader(nil)
-	_ = cmd.Run() // best effort
+	_ = cmd.Run()
 	return string(out), nil
 }
 
@@ -237,12 +269,7 @@ func defaultConfigPath() (string, error) {
 	return filepath.Join(dir, "config.toml"), nil
 }
 
-func ensureDir(path string) error {
-	return os.MkdirAll(filepath.Dir(path), 0o755)
-}
-
-func writeDefaultConfigTo(path string) error {
-	cfg := defaultConfig()
+func writeConfigTo(path string, cfg Config) error {
 	if path == "" {
 		return toml.NewEncoder(os.Stdout).Encode(cfg)
 	}
@@ -257,26 +284,8 @@ func writeDefaultConfigTo(path string) error {
 	return toml.NewEncoder(f).Encode(cfg)
 }
 
-func loadConfigMaybe(path string) (Config, error) {
-	cfg := defaultConfig()
-	var tryPath string
-	if path == "" || path == "::default::" {
-		if dp, err := defaultConfigPath(); err == nil {
-			tryPath = dp
-		}
-	} else {
-		tryPath = path
-	}
-	if tryPath != "" && fileExists(tryPath) {
-		if _, err := toml.DecodeFile(tryPath, &cfg); err != nil {
-			return cfg, err
-		}
-	}
-	return cfg, nil
-}
-
 /* =========================
-   Confirm overwrite dialog (restored)
+   Confirm overwrite dialog
    ========================= */
 
 func confirmOverwriteDialog(target string) bool {
@@ -292,7 +301,7 @@ func confirmOverwriteDialog(target string) bool {
 	def := tcell.StyleDefault
 	bg := def.Background(tcell.ColorReset)
 
-	msgLines := []string{
+	msg := []string{
 		"Configuration file already exists:",
 		target,
 		"",
@@ -301,17 +310,17 @@ func confirmOverwriteDialog(target string) bool {
 
 	draw := func() {
 		s.Clear()
-		w, h := s.Size()
+		W, H := s.Size()
 		boxW := 0
-		for _, m := range msgLines {
+		for _, m := range msg {
 			if len(m) > boxW {
 				boxW = len(m)
 			}
 		}
 		boxW += 4
-		boxH := len(msgLines) + 2
-		x0 := max(0, (w-boxW)/2)
-		y0 := max(0, (h-boxH)/2)
+		boxH := len(msg) + 2
+		x0 := max(0, (W-boxW)/2)
+		y0 := max(0, (H-boxH)/2)
 		for y := 0; y < boxH; y++ {
 			for x := 0; x < boxW; x++ {
 				ch := ' '
@@ -327,7 +336,7 @@ func confirmOverwriteDialog(target string) bool {
 				s.SetContent(x0+x, y0+y, ch, nil, bg)
 			}
 		}
-		for i, m := range msgLines {
+		for i, m := range msg {
 			start := x0 + 2
 			for j, r := range m {
 				s.SetContent(start+j, y0+1+i, r, nil, bg)
@@ -338,8 +347,7 @@ func confirmOverwriteDialog(target string) bool {
 
 	draw()
 	for {
-		ev := s.PollEvent()
-		switch e := ev.(type) {
+		switch e := s.PollEvent().(type) {
 		case *tcell.EventResize:
 			s.Sync()
 			draw()
@@ -362,7 +370,7 @@ func confirmOverwriteDialog(target string) bool {
 }
 
 /* =========================
-   Regex matching model
+   Regex/matching model
    ========================= */
 
 type compiledRule struct {
@@ -371,20 +379,14 @@ type compiledRule struct {
 	styleInv tcell.Style
 	name     string
 }
-
-type matchSpan struct {
-	start int
-	end   int
-	rule  int
-}
-
+type matchSpan struct{ start, end, rule int }
 type lineInfo struct {
 	spans       []matchSpan
 	matchesText []string
 }
 
 func compileRules(cfg Config) ([]compiledRule, []ColorPair) {
-	var cr []compiledRule
+	var out []compiledRule
 	var pairs []ColorPair
 	for i, r := range cfg.Rules {
 		if strings.TrimSpace(r.Regex) == "" {
@@ -397,7 +399,7 @@ func compileRules(cfg Config) ([]compiledRule, []ColorPair) {
 			continue
 		}
 		cp := ColorPair{FG: r.FG, BG: r.BG}
-		cr = append(cr, compiledRule{
+		out = append(out, compiledRule{
 			re:       re,
 			style:    styleFrom(cp),
 			styleInv: invertStyle(cp),
@@ -405,7 +407,7 @@ func compileRules(cfg Config) ([]compiledRule, []ColorPair) {
 		})
 		pairs = append(pairs, cp)
 	}
-	return cr, pairs
+	return out, pairs
 }
 
 func buildLineInfo(line string, rules []compiledRule) lineInfo {
@@ -414,14 +416,11 @@ func buildLineInfo(line string, rules []compiledRule) lineInfo {
 		return li
 	}
 
-	type rawSpan struct {
-		start, end, rule int
-	}
+	type rawSpan struct{ start, end, rule int }
 	var raw []rawSpan
 	for ri, cr := range rules {
-		idxs := cr.re.FindAllStringIndex(line, -1)
-		for _, p := range idxs {
-			raw = append(raw, rawSpan{start: p[0], end: p[1], rule: ri})
+		for _, p := range cr.re.FindAllStringIndex(line, -1) {
+			raw = append(raw, rawSpan{p[0], p[1], ri})
 			li.matchesText = append(li.matchesText, line[p[0]:p[1]])
 		}
 	}
@@ -448,8 +447,7 @@ func buildLineInfo(line string, rules []compiledRule) lineInfo {
 			owner[i] = rs.rule
 		}
 	}
-	i := 0
-	for i < len(owner) {
+	for i := 0; i < len(owner); {
 		if owner[i] == -1 {
 			i++
 			continue
@@ -473,10 +471,7 @@ type preScan struct {
 }
 
 func precompute(lines []string, rules []compiledRule) preScan {
-	ps := preScan{
-		lines: lines,
-		info:  make([]lineInfo, len(lines)),
-	}
+	ps := preScan{lines: lines, info: make([]lineInfo, len(lines))}
 	for i, ln := range lines {
 		li := buildLineInfo(ln, rules)
 		ps.info[i] = li
@@ -492,6 +487,10 @@ func precompute(lines []string, rules []compiledRule) preScan {
    NDJSON helpers
    ========================= */
 
+type nopCloser struct{ io.Writer }
+
+func (n nopCloser) Close() error { return nil }
+
 func openDest(dest string) (io.WriteCloser, error) {
 	switch dest {
 	case "stderr":
@@ -506,27 +505,10 @@ func openDest(dest string) (io.WriteCloser, error) {
 	}
 }
 
-type nopCloser struct{ io.Writer }
-
-func (n nopCloser) Close() error { return nil }
-
 /* =========================
-   Temp roots using argv[0]
+   Temp file helpers (argv[0]-scoped)
    ========================= */
 
-func exeBase() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return "output-tool"
-	}
-	return filepath.Base(exe)
-}
-func tempBase() string {
-	return filepath.Join(os.TempDir(), exeBase())
-}
-func tempRoot() string {
-	return filepath.Join(tempBase(), fmt.Sprintf("%d", os.Getpid()))
-}
 func makeTempJSON() (string, *os.File, error) {
 	root := tempRoot()
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -543,32 +525,20 @@ func makeTempJSON() (string, *os.File, error) {
 /* =========================
    Cleanup orphans
    ========================= */
-// at top of file if you want a tiny helper:
-func pathExists(p string) bool {
-	_, err := os.Stat(p)
-	return err == nil
-}
 
-// replace the whole cleanupOrphans with this:
 func cleanupOrphans(base string, olderThan time.Duration) (files int, dirs int, err error) {
-	// if the base doesn't exist yet, nothing to do
 	if !pathExists(base) {
 		return 0, 0, nil
 	}
 
 	now := time.Now()
 
-	// pass 1: delete stale files we know we created
-	err = filepath.WalkDir(base, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			// skip paths we can't read; don't bubble the error
-			return nil
-		}
-		if d == nil || d.IsDir() {
+	// delete stale files we created
+	_ = filepath.WalkDir(base, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil || d == nil || d.IsDir() {
 			return nil
 		}
 		name := d.Name()
-		// only remove files we own by pattern
 		if !(strings.HasPrefix(name, "line-") && strings.HasSuffix(name, ".json")) &&
 			!(strings.HasPrefix(name, "stream-") && strings.HasSuffix(name, ".log")) {
 			return nil
@@ -584,13 +554,10 @@ func cleanupOrphans(base string, olderThan time.Duration) (files int, dirs int, 
 		}
 		return nil
 	})
-	// don't fail cleanup if the walk had issues
-	// pass 2: prune empty dirs (PID dirs, etc.)
+
+	// prune empty dirs
 	_ = filepath.WalkDir(base, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-		if d == nil || !d.IsDir() || path == base {
+		if walkErr != nil || d == nil || !d.IsDir() || path == base {
 			return nil
 		}
 		entries, e := os.ReadDir(path)
@@ -605,53 +572,26 @@ func cleanupOrphans(base string, olderThan time.Duration) (files int, dirs int, 
 }
 
 /* =========================
-   UI + spawn via temp file + dynamic error panel
+   Data types for output
    ========================= */
 
 type SourceInfo struct {
-	Kind string `json:"kind"`
-	Path string `json:"path,omitempty"`
+	Kind string `json:"kind"`           // "file" | "primary" | "pipe"
+	Path string `json:"path,omitempty"` // for file mode
 }
 type Output struct {
 	Line       string     `json:"line"`
 	Matches    []string   `json:"matches"`
-	LineNumber int        `json:"line_number"`
+	LineNumber int        `json:"line_number"` // 1-based; 0 on cancel
 	Source     SourceInfo `json:"source"`
 }
 
-func shellQuote(arg string) string {
-	if arg == "" {
-		return "''"
-	}
-	need := false
-	for _, r := range arg {
-		if r <= 0x20 || strings.ContainsRune(`'"$\`+"`*?[]{}<>|&;()!", r) {
-			need = true
-			break
-		}
-	}
-	if !need {
-		return arg
-	}
-	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
-}
-func expandArg(s string) string { return os.Expand(s, func(k string) string { return os.Getenv(k) }) }
-func expandArgs(argv []string, path string) []string {
-	out := make([]string, 0, len(argv))
-	for _, a := range argv {
-		a = strings.ReplaceAll(a, "<path>", path)
-		a = expandArg(a)
-		out = append(out, a)
-	}
-	return out
-}
+/* =========================
+   TUI
+   ========================= */
 
 func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []ColorPair, errLinesMax int, errPanel *[]string) (string, []string, int, bool, int, int) {
-	lines := ps.lines
-	info := ps.info
-	matchLines := ps.matchLines
-	totalMatches := ps.totalMatches
-
+	lines, info, matchLines, totalMatches := ps.lines, ps.info, ps.matchLines, ps.totalMatches
 	if len(lines) == 0 {
 		return "", nil, 0, false, 0, 0
 	}
@@ -680,8 +620,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		errPanel = &tmp
 	}
 	addErr := func(msg string) {
-		*errPanel = append(*errPanel, msg)
-		fmt.Fprintln(os.Stderr, msg)
+		*errPanel = append(*errPanel, msg) // buffer only; no stderr during TUI
 		s.PostEvent(tcell.NewEventInterrupt(nil))
 	}
 	getErrH := func() int {
@@ -698,8 +637,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		return n
 	}
 
-	cursor := 0
-	offset := 0
+	cursor, offset := 0, 0
 	lnWidth := digits(len(lines))
 	gutterWidth := lnWidth + 2
 	contentLeft := gutterWidth
@@ -707,7 +645,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 	ensureCursorVisible := func() {
 		_, h := s.Size()
 		errH := getErrH()
-		usable := max(0, h-2-errH)
+		usable := max(0, h-2-errH) // top + status + err panel
 		if cursor < offset {
 			offset = cursor
 		} else if cursor >= offset+usable {
@@ -717,8 +655,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		offset = clamp(offset, 0, maxOffset)
 	}
 	putStr := func(x, y int, style tcell.Style, str string, wlimit int) int {
-		col := x
-		w := 0
+		col, w := x, 0
 		for _, r := range str {
 			if wlimit >= 0 && w >= wlimit {
 				break
@@ -763,15 +700,10 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 	}
 
 	spawnCurrent := func(idx int) {
-		if cfg.Action != "spawn" {
+		if strings.ToLower(cfg.Action) != "spawn" {
 			return
 		}
-		rec := Output{
-			Line:       lines[idx],
-			Matches:    info[idx].matchesText,
-			LineNumber: idx + 1,
-			Source:     source,
-		}
+		rec := Output{Line: lines[idx], Matches: info[idx].matchesText, LineNumber: idx + 1, Source: source}
 		path, f, err := makeTempJSON()
 		if err != nil {
 			addErr("temp file create failed: " + err.Error())
@@ -797,7 +729,6 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 			_ = os.Remove(path)
 			return
 		}
-
 		cmd := exec.Command(argv[0], argv[1:]...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if err := cmd.Start(); err != nil {
@@ -811,13 +742,13 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 
 	drawContentLine := func(rowY, lineIdx, width int, isSel bool) {
 		line := lines[lineIdx]
-		rowStyle := normal
-		gutStyle := gutterStyle
+		rowStyle, gutStyle := normal, gutterStyle
 		if isSel {
-			rowStyle = highlight
-			gutStyle = gutterHLStyle
+			rowStyle, gutStyle = highlight, gutterHLStyle
 		}
 		fillRow(rowY, rowStyle)
+
+		// gutter
 		numStr := strconv.Itoa(lineIdx + 1)
 		pad := lnWidth - len(numStr)
 		x := 0
@@ -827,6 +758,8 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		}
 		x += putStr(x, rowY, gutStyle, numStr, -1)
 		x += putStr(x, rowY, gutStyle, ": ", -1)
+
+		// content with painted spans
 		avail := max(0, width-contentLeft)
 		if avail <= 0 {
 			return
@@ -837,8 +770,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		if len(li.spans) > 0 {
 			curSpan = &li.spans[0]
 		}
-		bytePos := 0
-		col := contentLeft
+		bytePos, col := 0, contentLeft
 		for _, r := range line {
 			if col >= width {
 				break
@@ -875,13 +807,13 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		errH := getErrH()
 		usable := max(0, h-2-errH)
 
-		// Top bar
+		// top bar
 		fillRow(0, topStyle)
 		topMsg := fmt.Sprintf(" input:%s  action:%s  match-lines:%d  matches:%d  |  n:next  N:prev ",
 			source.Kind, strings.ToLower(cfg.Action), len(matchLines), totalMatches)
 		putStr(0, 0, topStyle, topMsg, -1)
 
-		// Content
+		// content
 		for row := 0; row < usable; row++ {
 			i := offset + row
 			if i >= len(lines) {
@@ -891,7 +823,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 			drawContentLine(1+row, i, w, i == cursor)
 		}
 
-		// Error panel
+		// error panel
 		if errH > 0 {
 			startY := 1 + usable
 			for i := 0; i < errH; i++ {
@@ -910,12 +842,12 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 			}
 		}
 
-		// Bottom status
+		// bottom status bar
 		statusRow := h - 1
 		fillRow(statusRow, statusStyle)
 		lineNum := clamp(cursor+1, 1, len(lines))
 		charCount := utf8.RuneCountInString(lines[cursor])
-		actionLabel := map[bool]string{true: "spawn", false: "select"}[cfg.Action == "spawn"]
+		actionLabel := map[bool]string{true: "spawn", false: "select"}[strings.ToLower(cfg.Action) == "spawn"]
 		status := fmt.Sprintf(" %d/%d  |  chars: %d  |  ↑/↓ PgUp/PgDn Home/End  Enter=%s  q/Esc=quit ",
 			lineNum, len(lines), charCount, actionLabel)
 		putStr(0, statusRow, statusStyle, status, -1)
@@ -927,8 +859,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 	draw()
 
 	for {
-		ev := s.PollEvent()
-		switch e := ev.(type) {
+		switch e := s.PollEvent().(type) {
 		case *tcell.EventInterrupt:
 			ensureCursorVisible()
 			draw()
@@ -939,7 +870,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		case *tcell.EventKey:
 			switch e.Key() {
 			case tcell.KeyEnter:
-				if cfg.Action == "spawn" {
+				if strings.ToLower(cfg.Action) == "spawn" {
 					spawnCurrent(cursor)
 					ensureCursorVisible()
 					draw()
@@ -962,15 +893,13 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 				}
 			case tcell.KeyPgUp:
 				_, h := s.Size()
-				errH := getErrH()
-				usable := max(0, h-2-errH)
+				usable := max(0, h-2-getErrH())
 				cursor = clamp(cursor-usable, 0, len(lines)-1)
 				ensureCursorVisible()
 				draw()
 			case tcell.KeyPgDn:
 				_, h := s.Size()
-				errH := getErrH()
-				usable := max(0, h-2-errH)
+				usable := max(0, h-2-getErrH())
 				cursor = clamp(cursor+usable, 0, len(lines)-1)
 				ensureCursorVisible()
 				draw()
@@ -1021,7 +950,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, onlyOnMatches bool, noTUI bool, errLinesMax int) error {
 	cRules, rulePairs := compileRules(cfg)
 
-	// Temp file for captured stream (base uses argv[0])
+	// capture stdin to temp file (so user can open later)
 	root := tempRoot()
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return fmt.Errorf("mk temp dir: %w", err)
@@ -1035,18 +964,16 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 
 	in := bufio.NewScanner(os.Stdin)
 	const maxCap = 10 * 1024 * 1024
-	buf := make([]byte, 0, 64*1024)
-	in.Buffer(buf, maxCap)
+	in.Buffer(make([]byte, 0, 64*1024), maxCap)
 
 	var lines []string
 	matchLines := make([]int, 0, 128)
-	totalMatches := 0
+	totalMatches, lineNo := 0, 0
 
-	lineNo := 0
 	for in.Scan() {
 		raw := in.Text()
-		fmt.Fprintln(os.Stdout, raw)
-		fmt.Fprintln(outf, raw)
+		fmt.Fprintln(os.Stdout, raw) // passthrough
+		fmt.Fprintln(outf, raw)      // capture
 		lines = append(lines, raw)
 		li := buildLineInfo(raw, cRules)
 		if len(li.spans) > 0 {
@@ -1070,6 +997,7 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 		ps.info[i] = buildLineInfo(ln, cRules)
 	}
 
+	// non-tty: cat-like; optional NDJSON
 	if !isTTYOut {
 		if emitNDJSON && totalMatches > 0 {
 			wc, err := openDest(jsonDest)
@@ -1081,12 +1009,7 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 			enc.SetEscapeHTML(false)
 			src := SourceInfo{Kind: "pipe"}
 			for _, i := range ps.matchLines {
-				rec := Output{
-					Line:       ps.lines[i],
-					Matches:    ps.info[i].matchesText,
-					LineNumber: i + 1,
-					Source:     src,
-				}
+				rec := Output{Line: ps.lines[i], Matches: ps.info[i].matchesText, LineNumber: i + 1, Source: src}
 				if err := enc.Encode(rec); err != nil {
 					return err
 				}
@@ -1095,10 +1018,10 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 		return nil
 	}
 
+	// TTY decisions
 	if onlyOnMatches && totalMatches == 0 {
 		return nil
 	}
-
 	if emitNDJSON && totalMatches > 0 {
 		wc, err := openDest(jsonDest)
 		if err != nil {
@@ -1108,12 +1031,7 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 		enc.SetEscapeHTML(false)
 		src := SourceInfo{Kind: "pipe"}
 		for _, i := range ps.matchLines {
-			rec := Output{
-				Line:       ps.lines[i],
-				Matches:    ps.info[i].matchesText,
-				LineNumber: i + 1,
-				Source:     src,
-			}
+			rec := Output{Line: ps.lines[i], Matches: ps.info[i].matchesText, LineNumber: i + 1, Source: src}
 			if err := enc.Encode(rec); err != nil {
 				_ = wc.Close()
 				return err
@@ -1121,7 +1039,6 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 		}
 		_ = wc.Close()
 	}
-
 	if noTUI {
 		return nil
 	}
@@ -1130,6 +1047,7 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 	var panel []string
 	lineText, matches, lineNum, ok, _, _ := runListUIWithRules(ps, cfg, src, rulePairs, errLinesMax, &panel)
 
+	// replay error panel after exit
 	if len(panel) > 0 {
 		fmt.Fprintln(os.Stderr, "--- output-tool messages ---")
 		for _, m := range panel {
@@ -1137,9 +1055,8 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 		}
 	}
 
-	if cfg.Action == "print" {
-		var out Output
-		out.Source = src
+	if strings.ToLower(cfg.Action) == "print" {
+		out := Output{Source: src}
 		if ok {
 			out.Line = strings.TrimRightFunc(lineText, func(r rune) bool { return r == '\r' })
 			out.Matches = matches
@@ -1163,7 +1080,15 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 func main() {
 	flag.Parse()
 
-	// Handle default config writing
+	// detect if user explicitly set --err-lines (so CLI can override config and also override defaults when writing)
+	errLinesWasSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "err-lines" {
+			errLinesWasSet = true
+		}
+	})
+
+	// handle default-config writing (with overrides!)
 	if *flagOutputDefault {
 		if *flagFile != "" || *flagPipe || *flagPrimary {
 			fmt.Fprintln(os.Stderr, "error: --file/--pipe/--primary cannot be used with --output-default-config")
@@ -1180,13 +1105,19 @@ func main() {
 			outPath = *flagConfig // empty => stdout
 		}
 
+		// build defaults, then apply CLI overrides
+		cfg := defaultConfig()
+		if errLinesWasSet {
+			cfg.UI.ErrLinesMax = *flagErrLinesMax
+		}
+
+		// write it (with overwrite confirmation if file exists and not --force)
 		if outPath == "" {
-			if err := writeDefaultConfigTo(""); err != nil {
+			if err := writeConfigTo("", cfg); err != nil {
 				log.Fatalf("failed to write default config: %v", err)
 			}
 			return
 		}
-
 		existed := fileExists(outPath)
 		if existed && !*flagForce {
 			if !confirmOverwriteDialog(outPath) {
@@ -1194,7 +1125,7 @@ func main() {
 				return
 			}
 		}
-		if err := writeDefaultConfigTo(outPath); err != nil {
+		if err := writeConfigTo(outPath, cfg); err != nil {
 			log.Fatalf("failed to write default config: %v", err)
 		}
 		if existed {
@@ -1205,7 +1136,7 @@ func main() {
 		return
 	}
 
-	// Enforce exactly one of --pipe, --file, --primary
+	// exactly one input mode
 	modeCount := 0
 	if *flagPipe {
 		modeCount++
@@ -1221,11 +1152,22 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Load config
-	cfg, err := loadConfigMaybe(*flagConfig)
-	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
+	// load config (from provided path or ::default:: or built-in)
+	cfg := defaultConfig()
+	var tryPath string
+	if *flagConfig == "" || *flagConfig == "::default::" {
+		if dp, err := defaultConfigPath(); err == nil {
+			tryPath = dp
+		}
+	} else {
+		tryPath = *flagConfig
 	}
+	if tryPath != "" && fileExists(tryPath) {
+		if _, err := toml.DecodeFile(tryPath, &cfg); err != nil {
+			log.Fatalf("failed to load config: %v", err)
+		}
+	}
+
 	cfg.Action = strings.ToLower(strings.TrimSpace(cfg.Action))
 	if cfg.Action != "print" && cfg.Action != "spawn" {
 		cfg.Action = "print"
@@ -1233,8 +1175,17 @@ func main() {
 	if cfg.Cleanup.AgeMinutes <= 0 {
 		cfg.Cleanup.AgeMinutes = 60
 	}
+	if cfg.UI.ErrLinesMax <= 0 {
+		cfg.UI.ErrLinesMax = 5
+	}
 
-	// Optional orphans cleanup (automatic if enabled; also if flag is set)
+	// effective err panel height: CLI overrides config if provided
+	effectiveErrLines := cfg.UI.ErrLinesMax
+	if errLinesWasSet {
+		effectiveErrLines = *flagErrLinesMax
+	}
+
+	// auto- or on-demand cleanup
 	if cfg.Cleanup.Enabled || *flagCleanupNow {
 		files, dirs, _ := cleanupOrphans(tempBase(), time.Duration(cfg.Cleanup.AgeMinutes)*time.Minute)
 		if files+dirs > 0 {
@@ -1243,18 +1194,18 @@ func main() {
 		}
 	}
 
-	// TTY detection
+	// tty detection
 	isTTYOut := term.IsTerminal(int(os.Stdout.Fd()))
 
 	// PIPE MODE
 	if *flagPipe {
-		if err := runPipeMode(cfg, isTTYOut, *flagJSONMatches, *flagJSONDest, *flagOnlyOnMatches, *flagNoTUI, *flagErrLinesMax); err != nil {
+		if err := runPipeMode(cfg, isTTYOut, *flagJSONMatches, *flagJSONDest, *flagOnlyOnMatches, *flagNoTUI, effectiveErrLines); err != nil {
 			log.Fatalf("pipe mode error: %v", err)
 		}
 		return
 	}
 
-	// PRIMARY or FILE MODE
+	// PRIMARY / FILE MODE
 	var lines []string
 	source := SourceInfo{Kind: "file"}
 
@@ -1295,16 +1246,16 @@ func main() {
 		}
 	}
 
-	// Compile & pre-scan
+	// compile + pre-scan
 	cRules, rulePairs := compileRules(cfg)
 	ps := precompute(lines, cRules)
 
-	// only-on-matches guard
+	// open only on matches if requested
 	if *flagOnlyOnMatches && ps.totalMatches == 0 {
 		return
 	}
 
-	// Optional NDJSON before TUI
+	// optional NDJSON before TUI
 	if *flagJSONMatches && ps.totalMatches > 0 {
 		wc, err := openDest(*flagJSONDest)
 		if err != nil {
@@ -1313,12 +1264,7 @@ func main() {
 		enc := json.NewEncoder(wc)
 		enc.SetEscapeHTML(false)
 		for _, i := range ps.matchLines {
-			rec := Output{
-				Line:       ps.lines[i],
-				Matches:    ps.info[i].matchesText,
-				LineNumber: i + 1,
-				Source:     source,
-			}
+			rec := Output{Line: ps.lines[i], Matches: ps.info[i].matchesText, LineNumber: i + 1, Source: source}
 			if err := enc.Encode(rec); err != nil {
 				_ = wc.Close()
 				log.Fatalf("json encode error: %v", err)
@@ -1330,11 +1276,11 @@ func main() {
 		return
 	}
 
-	// Open TUI
+	// TUI
 	var panel []string
-	lineText, matches, lineNum, ok, _, _ := runListUIWithRules(ps, cfg, source, rulePairs, *flagErrLinesMax, &panel)
+	lineText, matches, lineNum, ok, _, _ := runListUIWithRules(ps, cfg, source, rulePairs, effectiveErrLines, &panel)
 
-	// Replay error panel after exit
+	// replay panel after exit
 	if len(panel) > 0 {
 		fmt.Fprintln(os.Stderr, "--- output-tool messages ---")
 		for _, m := range panel {
@@ -1342,10 +1288,9 @@ func main() {
 		}
 	}
 
-	// Print selection JSON only in print mode
-	if cfg.Action == "print" {
-		var out Output
-		out.Source = source
+	// print result only in print mode
+	if strings.ToLower(cfg.Action) == "print" {
+		out := Output{Source: source}
 		if ok {
 			out.Line = strings.TrimRightFunc(lineText, func(r rune) bool { return r == '\r' })
 			out.Matches = matches
