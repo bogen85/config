@@ -24,21 +24,14 @@ import (
 	"golang.org/x/term"
 )
 
-/* =========================
-   Config types & defaults
-   ========================= */
-
-type ColorPair struct {
-	FG string `toml:"fg"`
-	BG string `toml:"bg"`
-}
+type ColorPair struct{ FG, BG string }
 
 type Rule struct {
 	Name        string `toml:"name"`
 	Regex       string `toml:"regex"`
-	FileGroup   int    `toml:"file_group"`   // 1-based capture group index; 0 = unused
-	LineGroup   int    `toml:"line_group"`   // 1-based capture group index; 0 = unused
-	ColumnGroup int    `toml:"column_group"` // 1-based capture group index; 0 = unused
+	FileGroup   int    `toml:"file_group"`
+	LineGroup   int    `toml:"line_group"`
+	ColumnGroup int    `toml:"column_group"`
 	FG          string `toml:"fg"`
 	BG          string `toml:"bg"`
 }
@@ -49,24 +42,22 @@ type CleanupCfg struct {
 }
 
 type UICfg struct {
-	ErrLinesMax int `toml:"err_lines_max"` // max height for error panel; 0 disables
+	ErrLinesMax int `toml:"err_lines_max"`
 }
 
 type Editors struct {
-	File        []string `toml:"file"`          // e.g. ["cudatext","${__FILE__}"]
-	FileLine    []string `toml:"file_line"`     // e.g. ["cudatext","${__FILE__}@${__LINE__}"]
-	FileLineCol []string `toml:"file_line_col"` // e.g. ["cudatext","${__FILE__}@${__LINE__}@${__COLUMN__}"]
-	Fallback    []string `toml:"fallback"`      // e.g. ["cudatext","${__JSON__}"]
-
-	Pretty  bool `toml:"pretty"`   // pretty-print JSON files for editors
-	UseTabs bool `toml:"use_tabs"` // pretty indent uses tabs if true; else spaces
-	Spaces  int  `toml:"spaces"`   // number of spaces if UseTabs=false (default 4)
+	File        []string `toml:"file"`
+	FileLine    []string `toml:"file_line"`
+	FileLineCol []string `toml:"file_line_col"`
+	Fallback    []string `toml:"fallback"`
+	Pretty      bool     `toml:"pretty"`
+	UseTabs     bool     `toml:"use_tabs"`
+	Spaces      int      `toml:"spaces"`
 }
 
 type Config struct {
-	// Top-level runtime knobs (can be overridden by CLI)
-	Action          string `toml:"action"` // "print" | "edit"
-	Pipe            bool   `toml:"pipe"`   // exactly one of Pipe/File/Primary must be chosen
+	Action          string `toml:"action"`
+	Pipe            bool   `toml:"pipe"`
 	File            string `toml:"file"`
 	Primary         bool   `toml:"primary"`
 	OnlyOnMatches   bool   `toml:"only_on_matches"`
@@ -80,109 +71,22 @@ type Config struct {
 		Highlight       ColorPair `toml:"highlight"`
 		Gutter          ColorPair `toml:"gutter"`
 		GutterHighlight ColorPair `toml:"gutter_highlight"`
-		Status          ColorPair `toml:"status"`     // bottom status bar
-		TopStatus       ColorPair `toml:"top_status"` // top bar
-		ErrPanel        ColorPair `toml:"err_panel"`  // error panel
+		Status          ColorPair `toml:"status"`
+		TopStatus       ColorPair `toml:"top_status"`
+		ErrPanel        ColorPair `toml:"err_panel"`
+		CursorGutter    ColorPair `toml:"cursor_gutter"`
 	} `toml:"colors"`
 
 	Rules   []Rule     `toml:"rules"`
 	Cleanup CleanupCfg `toml:"cleanup"`
 	UI      UICfg      `toml:"ui"`
 	Editors Editors    `toml:"editors"`
+
+	SplitOnCollision bool `toml:"split_on_collision"`
 }
 
-// Resolve input mode conflicts deterministically: file > primary > pipe.
-// If an explicit map is provided, we prefer modes explicitly set via CLI;
-// if multiple explicit modes set, we still use the same priority.
-func resolveInputModes(cfg *Config, explicit map[string]bool) (chosen string, note string) {
-	// Determine explicit requests
-	expFile := explicit != nil && explicit["file"] && strings.TrimSpace(cfg.File) != ""
-	expPrimary := explicit != nil && explicit["primary"] && cfg.Primary
-	expPipe := explicit != nil && explicit["pipe"] && cfg.Pipe
-
-	// If any explicit provided, use explicit-only to choose.
-	if expFile || expPrimary || expPipe {
-		if expFile {
-			cfg.Pipe = false
-			cfg.Primary = false
-			chosen = "file"
-		} else if expPrimary {
-			cfg.Pipe = false
-			cfg.File = ""
-			chosen = "primary"
-		} else { // expPipe
-			cfg.File = ""
-			cfg.Primary = false
-			chosen = "pipe"
-		}
-		// Clear conflicts already; note only if more than one explicit set
-		count := 0
-		if expFile {
-			count++
-		}
-		if expPrimary {
-			count++
-		}
-		if expPipe {
-			count++
-		}
-		if count > 1 {
-			note = "multiple input modes specified on CLI; resolved by priority (file > primary > pipe)"
-		}
-		return
-	}
-
-	// Otherwise base on current cfg values (from config/defaults).
-	count := 0
-	if cfg.Pipe {
-		count++
-	}
-	if strings.TrimSpace(cfg.File) != "" {
-		count++
-	}
-	if cfg.Primary {
-		count++
-	}
-
-	if count <= 1 {
-		// nothing to resolve
-		if cfg.Pipe {
-			chosen = "pipe"
-		} else if strings.TrimSpace(cfg.File) != "" {
-			chosen = "file"
-		} else if cfg.Primary {
-			chosen = "primary"
-		} else {
-			chosen = ""
-		}
-		return
-	}
-
-	// Resolve by priority
-	if strings.TrimSpace(cfg.File) != "" {
-		cfg.Pipe = false
-		cfg.Primary = false
-		chosen = "file"
-		note = "multiple input modes in config; resolved by priority (file > primary > pipe)"
-		return
-	}
-	if cfg.Primary {
-		cfg.Pipe = false
-		cfg.File = ""
-		chosen = "primary"
-		note = "multiple input modes in config; resolved by priority (file > primary > pipe)"
-		return
-	}
-	// else pipe
-	cfg.File = ""
-	cfg.Primary = false
-	chosen = "pipe"
-	note = "multiple input modes in config; resolved by priority (file > primary > pipe)"
-	return
-}
 func defaultConfig() Config {
 	var c Config
-	// default behavior: now "edit"
 	c.Action = "edit"
 	c.Pipe = true
 	c.File = ""
@@ -192,8 +96,8 @@ func defaultConfig() Config {
 	c.JSONMatches = false
 	c.JSONDest = "stderr"
 	c.NoTUI = false
+	c.SplitOnCollision = true
 
-	// colors (names or #rrggbb or palette:N)
 	c.Colors.Normal = ColorPair{FG: "white", BG: "black"}
 	c.Colors.Highlight = ColorPair{FG: "black", BG: "white"}
 	c.Colors.Gutter = ColorPair{FG: "gray", BG: "black"}
@@ -201,27 +105,22 @@ func defaultConfig() Config {
 	c.Colors.Status = ColorPair{FG: "#000000", BG: "#ffff00"}
 	c.Colors.TopStatus = ColorPair{FG: "#000000", BG: "#00ff00"}
 	c.Colors.ErrPanel = ColorPair{FG: "#ffffff", BG: "#303030"}
+	c.Colors.CursorGutter = ColorPair{FG: "#ffffff", BG: "#005f87"}
 
-	// default rule: path:line:col (gcc/go-style)
-	// capture groups: 1=file, 2=line, 3=column
-	c.Rules = []Rule{
-		{
-			Name:        "path:line:col",
-			Regex:       `(?:\.\.?/)?([A-Za-z0-9._/\-]+):(\d+):(\d+)`,
-			FileGroup:   1,
-			LineGroup:   2,
-			ColumnGroup: 3,
-			FG:          "black",
-			BG:          "green",
-		},
-	}
+	c.Rules = []Rule{{
+		Name:        "path:line:col",
+		Regex:       `(?:\.\.?/)?([A-Za-z0-9._/\-]+):(\d+):(\d+)`,
+		FileGroup:   1,
+		LineGroup:   2,
+		ColumnGroup: 3,
+		FG:          "black",
+		BG:          "green",
+	}}
 
-	// cleanup & UI defaults
 	c.Cleanup.Enabled = true
-	c.Cleanup.AgeMinutes = 5
+	c.Cleanup.AgeMinutes = 2
 	c.UI.ErrLinesMax = 5
 
-	// editors (cudatext defaults)
 	c.Editors.File = []string{"cudatext", "${__FILE__}"}
 	c.Editors.FileLine = []string{"cudatext", "${__FILE__}@${__LINE__}"}
 	c.Editors.FileLineCol = []string{"cudatext", "${__FILE__}@${__LINE__}@${__COLUMN__}"}
@@ -229,39 +128,27 @@ func defaultConfig() Config {
 	c.Editors.Pretty = true
 	c.Editors.UseTabs = true
 	c.Editors.Spaces = 4
-
 	return c
 }
 
-/* =========================
-   Flags
-   ========================= */
-
 var (
-	flagFile      = flag.String("file", "", "path to UTF-8 text file (one entry per line)")
+	flagFile      = flag.String("file", "", "path to UTF-8 text file")
 	flagConfig    = flag.String("config", "", "path to config TOML (use ::default:: for per-user default path)")
 	flagOutputNew = flag.Bool("output-new-config", false, "write a NEW config TOML (do not read existing configs) and exit")
 	flagForce     = flag.Bool("force", false, "allow overwriting existing config when writing")
 
-	flagAction = flag.String("action", "edit", `action on Enter: "edit" or "print"`)
-
-	flagPrimary       = flag.Bool("primary", false, "use PRIMARY selection via xclip as input (mutually exclusive with --file/--pipe)")
-	flagPipe          = flag.Bool("pipe", false, "read from stdin, pass-through to stdout in real time, then optionally open TUI")
-	flagOnlyOnMatches = flag.Bool("only-on-matches", false, "if there are no matches, exit without opening the TUI")
-	flagOnlyViewMatch = flag.Bool("only-view-matches", false, "show only lines that have matches in the TUI (line numbers remain original)")
-
-	flagJSONMatches = flag.Bool("json-matches", false, "emit NDJSON for each matching line (pre-TUI/quasi-print)")
-	flagJSONDest    = flag.String("json-dest", "stderr", "NDJSON destination: stderr|stdout|/path/to/file")
-	flagNoTUI       = flag.Bool("no-tui", false, "when emitting NDJSON, skip TUI and exit")
-
-	flagErrLinesMax = flag.Int("err-lines", 5, "max lines for bottom error panel (0 disables)")
-
-	flagCleanupNow = flag.Bool("cleanup-orphaned", false, "cleanup old temp files at startup (uses config.cleanup.age_minutes)")
+	flagAction        = flag.String("action", "edit", `action on Enter: "edit" or "print"`)
+	flagPrimary       = flag.Bool("primary", false, "use PRIMARY selection via xclip as input")
+	flagPipe          = flag.Bool("pipe", false, "read from stdin and passthrough; optionally open TUI")
+	flagOnlyOnMatches = flag.Bool("only-on-matches", false, "if no matches, exit without opening TUI")
+	flagOnlyViewMatch = flag.Bool("only-view-matches", false, "show only lines with matches in the TUI")
+	flagJSONMatches   = flag.Bool("json-matches", false, "emit NDJSON for each matching line (pre-TUI/quasi-print)")
+	flagJSONDest      = flag.String("json-dest", "stderr", "NDJSON destination: stderr|stdout|/path/to/file")
+	flagNoTUI         = flag.Bool("no-tui", false, "when emitting NDJSON, skip TUI and exit")
+	flagErrLinesMax   = flag.Int("err-lines", 5, "max lines for bottom error panel (0 disables)")
+	flagCleanupNow    = flag.Bool("cleanup-orphaned", false, "cleanup old temp files at startup")
+	flagSplitOnCol    = flag.Bool("split-on-collision", false, "duplicate view only when different-rule matches overlap")
 )
-
-/* =========================
-   Small helpers
-   ========================= */
 
 func digits(n int) int {
 	if n <= 0 {
@@ -302,6 +189,7 @@ func tempBase() string            { return filepath.Join(os.TempDir(), exeBase()
 func tempRoot() string            { return filepath.Join(tempBase(), fmt.Sprintf("%d", os.Getpid())) }
 func ensureDir(path string) error { return os.MkdirAll(filepath.Dir(path), 0o755) }
 func cwdConfigPath() string       { return filepath.Join(".", exeBase()+"-config.toml") }
+
 func expandWithEnv(s string, env map[string]string) string {
 	return os.Expand(s, func(k string) string {
 		if v, ok := env[k]; ok {
@@ -336,8 +224,7 @@ func expandArgsWithEnv(argv []string, extra map[string]string, path string) []st
 	return out
 }
 
-// JSON pretty helper
-func encodeJSONToFile(v any, f *os.File, pretty bool, useTabs bool, spaces int) error {
+func encodeJSONToFile(v any, f *os.File, pretty, useTabs bool, spaces int) error {
 	var b []byte
 	var err error
 	if pretty {
@@ -358,7 +245,6 @@ func encodeJSONToFile(v any, f *os.File, pretty bool, useTabs bool, spaces int) 
 	return err
 }
 
-// sanitize: drop control chars except tab to avoid rendering artifacts
 func sanitize(s string) string {
 	var b []rune
 	for _, r := range s {
@@ -368,10 +254,6 @@ func sanitize(s string) string {
 	}
 	return string(b)
 }
-
-/* =========================
-   Color parsing
-   ========================= */
 
 func parseColor(s string) tcell.Color {
 	s = strings.TrimSpace(s)
@@ -383,19 +265,14 @@ func parseColor(s string) tcell.Color {
 			return tcell.PaletteColor(n)
 		}
 	}
-	return tcell.GetColor(s) // supports #rrggbb and HTML/X11 names
+	return tcell.GetColor(s)
 }
-
 func styleFrom(p ColorPair) tcell.Style {
 	return tcell.StyleDefault.Foreground(parseColor(p.FG)).Background(parseColor(p.BG))
 }
 func invertStyle(p ColorPair) tcell.Style {
 	return tcell.StyleDefault.Foreground(parseColor(p.BG)).Background(parseColor(p.FG))
 }
-
-/* =========================
-   I/O helpers
-   ========================= */
 
 func readLines(path string) ([]string, error) {
 	f, err := os.Open(path)
@@ -416,13 +293,12 @@ func readLines(path string) ([]string, error) {
 func readPrimaryWithXclip() (string, error) {
 	_, err := exec.LookPath("xclip")
 	if err != nil {
-		return "", fmt.Errorf("xclip not found on PATH (install xclip or provide --file)")
+		return "", fmt.Errorf("xclip not found on PATH")
 	}
 	out, err := exec.Command("xclip", "-o", "-selection", "primary").Output()
 	if err != nil {
 		return "", fmt.Errorf("reading PRIMARY via xclip failed: %w", err)
 	}
-	// clear PRIMARY (best effort)
 	cmd := exec.Command("xclip", "-selection", "primary", "-in")
 	cmd.Stdin = bytes.NewReader(nil)
 	_ = cmd.Run()
@@ -469,10 +345,6 @@ func writeConfigTo(path string, cfg Config) error {
 	return toml.NewEncoder(f).Encode(cfg)
 }
 
-/* =========================
-   Confirm overwrite dialog
-   ========================= */
-
 func confirmOverwriteDialog(target string) bool {
 	s, err := tcell.NewScreen()
 	if err != nil {
@@ -482,17 +354,14 @@ func confirmOverwriteDialog(target string) bool {
 		return false
 	}
 	defer s.Fini()
-
 	def := tcell.StyleDefault
 	bg := def.Background(tcell.ColorReset)
-
 	msg := []string{
 		"Configuration file already exists:",
 		target,
 		"",
 		"Overwrite it?  [y]es / [n]o (Enter = yes, Esc = no)",
 	}
-
 	draw := func() {
 		s.Clear()
 		W, H := s.Size()
@@ -529,7 +398,6 @@ func confirmOverwriteDialog(target string) bool {
 		}
 		s.Show()
 	}
-
 	draw()
 	for {
 		switch e := s.PollEvent().(type) {
@@ -554,10 +422,6 @@ func confirmOverwriteDialog(target string) bool {
 	}
 }
 
-/* =========================
-   Regex/matching model
-   ========================= */
-
 type compiledRule struct {
 	re          *regexp.Regexp
 	style       tcell.Style
@@ -568,20 +432,17 @@ type compiledRule struct {
 	columnGroup int
 }
 type matchSpan struct{ start, end, rule int }
-
 type matchDetail struct {
-	start  int
-	end    int
-	rule   int
-	text   string
-	hasF   bool
-	file   string
-	hasL   bool
-	line   int
-	hasC   bool
-	column int
+	start, end int
+	rule       int
+	text       string
+	hasF       bool
+	file       string
+	hasL       bool
+	line       int
+	hasC       bool
+	column     int
 }
-
 type lineInfo struct {
 	spans   []matchSpan
 	matches []matchDetail
@@ -592,7 +453,7 @@ func compileRules(cfg Config) ([]compiledRule, []ColorPair) {
 	var pairs []ColorPair
 	for i, r := range cfg.Rules {
 		if strings.TrimSpace(r.Regex) == "" {
-			fmt.Fprintf(os.Stderr, "warning: rule %d has empty regex; skipping\n", i)
+			fmt.Fprintf(os.Stderr, "warning: rule %d empty regex; skipping\n", i)
 			continue
 		}
 		re, err := regexp.Compile(r.Regex)
@@ -602,47 +463,32 @@ func compileRules(cfg Config) ([]compiledRule, []ColorPair) {
 		}
 		cp := ColorPair{FG: r.FG, BG: r.BG}
 		out = append(out, compiledRule{
-			re:          re,
-			style:       styleFrom(cp),
-			styleInv:    invertStyle(cp),
-			name:        r.Name,
-			fileGroup:   r.FileGroup,
-			lineGroup:   r.LineGroup,
-			columnGroup: r.ColumnGroup,
+			re: re, style: styleFrom(cp), styleInv: invertStyle(cp), name: r.Name,
+			fileGroup: r.FileGroup, lineGroup: r.LineGroup, columnGroup: r.ColumnGroup,
 		})
 		pairs = append(pairs, cp)
 	}
 	return out, pairs
 }
 
-func atoiSafe(s string) (int, bool) {
-	n, err := strconv.Atoi(s)
-	return n, err == nil
-}
+func atoiSafe(s string) (int, bool) { n, err := strconv.Atoi(s); return n, err == nil }
 
 func buildLineInfo(line string, rules []compiledRule) lineInfo {
 	var li lineInfo
 	if len(rules) == 0 || len(line) == 0 {
 		return li
 	}
-
-	// For highlighting, we still need merged spans per rule over bytes
 	type rawSpan struct{ start, end, rule int }
 	var raw []rawSpan
-
 	for ri, cr := range rules {
-		// Use Submatch so we can extract file/line/column if configured
 		all := cr.re.FindAllStringSubmatchIndex(line, -1)
 		for _, idx := range all {
-			// idx: [fullStart, fullEnd, g1s, g1e, g2s, g2e, ...]
 			if len(idx) < 2 {
 				continue
 			}
 			fullStart, fullEnd := idx[0], idx[1]
 			raw = append(raw, rawSpan{start: fullStart, end: fullEnd, rule: ri})
-
 			md := matchDetail{start: fullStart, end: fullEnd, rule: ri, text: line[fullStart:fullEnd]}
-
 			if cr.fileGroup > 0 {
 				gi := 2 * cr.fileGroup
 				if gi+1 < len(idx) && idx[gi] >= 0 && idx[gi+1] >= 0 {
@@ -668,12 +514,9 @@ func buildLineInfo(line string, rules []compiledRule) lineInfo {
 					}
 				}
 			}
-
 			li.matches = append(li.matches, md)
 		}
 	}
-
-	// Build merged spans for highlighting by rule ownership
 	if len(raw) > 0 {
 		b := []byte(line)
 		owner := make([]int, len(b))
@@ -681,16 +524,18 @@ func buildLineInfo(line string, rules []compiledRule) lineInfo {
 			owner[i] = -1
 		}
 		for _, rs := range raw {
-			if rs.start < 0 {
-				rs.start = 0
+			s := rs.start
+			if s < 0 {
+				s = 0
 			}
-			if rs.end > len(b) {
-				rs.end = len(b)
+			e := rs.end
+			if e > len(b) {
+				e = len(b)
 			}
-			if rs.start >= rs.end {
+			if s >= e {
 				continue
 			}
-			for i := rs.start; i < rs.end; i++ {
+			for i := s; i < e; i++ {
 				owner[i] = rs.rule
 			}
 		}
@@ -708,7 +553,6 @@ func buildLineInfo(line string, rules []compiledRule) lineInfo {
 			i = j
 		}
 	}
-
 	return li
 }
 
@@ -717,7 +561,7 @@ type preScan struct {
 	info         []lineInfo
 	matchLines   []int
 	totalMatches int
-	origIdx      []int // original indices for each displayed line
+	origIdx      []int
 }
 
 func precompute(lines []string, rules []compiledRule) preScan {
@@ -746,31 +590,152 @@ func filterToMatches(ps preScan) preScan {
 		info = append(info, ps.info[i])
 		origIdx = append(origIdx, ps.origIdx[i])
 	}
-	// in filtered view, every line has matches
 	newMatchLines := make([]int, len(lines))
-	for i := range newMatchLines {
-		i = i
-	}
 	for i := range newMatchLines {
 		newMatchLines[i] = i
 	}
-	return preScan{
-		lines:        lines,
-		info:         info,
-		matchLines:   newMatchLines,
-		totalMatches: ps.totalMatches,
-		origIdx:      origIdx,
-	}
+	return preScan{lines: lines, info: info, matchLines: newMatchLines, totalMatches: ps.totalMatches, origIdx: origIdx}
 }
 
-/* =========================
-   NDJSON helpers
-   ========================= */
+// --- split_on_collision helpers ---
+func overlaps(aStart, aEnd, bStart, bEnd int) bool { return aStart < bEnd && bStart < aEnd }
+
+func ruleSetWithCollisions(mds []matchDetail) map[int]bool {
+	collide := map[int]bool{}
+	for i := 0; i < len(mds); i++ {
+		for j := i + 1; j < len(mds); j++ {
+			if mds[i].rule != mds[j].rule && overlaps(mds[i].start, mds[i].end, mds[j].start, mds[j].end) {
+				collide[mds[i].rule] = true
+				collide[mds[j].rule] = true
+			}
+		}
+	}
+	return collide
+}
+
+func nonCollidingMatches(mds []matchDetail) map[int]bool {
+	ok := map[int]bool{}
+	for i := range mds {
+		ok[i] = true
+	}
+	for i := 0; i < len(mds); i++ {
+		for j := 0; j < len(mds); j++ {
+			if i == j {
+				continue
+			}
+			if mds[i].rule != mds[j].rule && overlaps(mds[i].start, mds[i].end, mds[j].start, mds[j].end) {
+				ok[i] = false
+				break
+			}
+		}
+	}
+	return ok
+}
+
+func buildViewMatchesForRule(all []matchDetail, rule int) []matchDetail {
+	nonCol := nonCollidingMatches(all)
+	var ruleSpans [][2]int
+	for _, md := range all {
+		if md.rule == rule {
+			ruleSpans = append(ruleSpans, [2]int{md.start, md.end})
+		}
+	}
+	noOverlapWithRule := func(md matchDetail) bool {
+		for _, sp := range ruleSpans {
+			if overlaps(md.start, md.end, sp[0], sp[1]) {
+				return false
+			}
+		}
+		return true
+	}
+	var out []matchDetail
+	for i, md := range all {
+		if md.rule == rule {
+			out = append(out, md)
+			continue
+		}
+		if nonCol[i] {
+			out = append(out, md)
+			continue
+		}
+		if noOverlapWithRule(md) {
+			out = append(out, md)
+		}
+	}
+	return out
+}
+func buildSpansFromMatches(mds []matchDetail, line string) []matchSpan {
+	if len(mds) == 0 {
+		return nil
+	}
+	b := []byte(line)
+	owner := make([]int, len(b))
+	for i := range owner {
+		owner[i] = -1
+	}
+	for _, md := range mds {
+		s := md.start
+		if s < 0 {
+			s = 0
+		}
+		e := md.end
+		if e > len(b) {
+			e = len(b)
+		}
+		for i := s; i < e; i++ {
+			owner[i] = md.rule
+		}
+	}
+	var spans []matchSpan
+	for i := 0; i < len(owner); {
+		if owner[i] == -1 {
+			i++
+			continue
+		}
+		rule := owner[i]
+		j := i + 1
+		for j < len(owner) && owner[j] == rule {
+			j++
+		}
+		spans = append(spans, matchSpan{start: i, end: j, rule: rule})
+		i = j
+	}
+	return spans
+}
+func precomputeSplitOnCollision(lines []string, rules []compiledRule) preScan {
+	var ps preScan
+	for i, ln := range lines {
+		all := buildLineInfo(ln, rules)
+		if len(all.matches) == 0 {
+			continue
+		}
+		colRules := ruleSetWithCollisions(all.matches)
+		if len(colRules) == 0 {
+			ps.lines = append(ps.lines, ln)
+			ps.info = append(ps.info, all)
+			ps.matchLines = append(ps.matchLines, len(ps.lines)-1)
+			ps.totalMatches += len(all.matches)
+			ps.origIdx = append(ps.origIdx, i)
+			continue
+		}
+		for rr := range colRules {
+			viewMatches := buildViewMatchesForRule(all.matches, rr)
+			var li lineInfo
+			li.matches = viewMatches
+			li.spans = buildSpansFromMatches(viewMatches, ln)
+			ps.lines = append(ps.lines, ln)
+			ps.info = append(ps.info, li)
+			ps.matchLines = append(ps.matchLines, len(ps.lines)-1)
+			ps.totalMatches += len(li.matches)
+			ps.origIdx = append(ps.origIdx, i)
+		}
+	}
+	return ps
+}
 
 type nopCloser struct{ io.Writer }
 
 func (n nopCloser) Close() error { return nil }
-
 func openDest(dest string) (io.WriteCloser, error) {
 	switch dest {
 	case "stderr":
@@ -785,10 +750,6 @@ func openDest(dest string) (io.WriteCloser, error) {
 	}
 }
 
-/* =========================
-   Temp file helpers (argv[0]-scoped)
-   ========================= */
-
 func makeTempJSON() (string, *os.File, error) {
 	root := tempRoot()
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -802,18 +763,11 @@ func makeTempJSON() (string, *os.File, error) {
 	return path, f, nil
 }
 
-/* =========================
-   Cleanup orphans
-   ========================= */
-
-func cleanupOrphans(base string, olderThan time.Duration) (files int, dirs int, err error) {
+func cleanupOrphans(base string, olderThan time.Duration) (files, dirs int, err error) {
 	if !pathExists(base) {
 		return 0, 0, nil
 	}
-
 	now := time.Now()
-
-	// delete stale files we created
 	_ = filepath.WalkDir(base, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil || d == nil || d.IsDir() {
 			return nil
@@ -828,21 +782,19 @@ func cleanupOrphans(base string, olderThan time.Duration) (files int, dirs int, 
 			return nil
 		}
 		if now.Sub(info.ModTime()) >= olderThan {
-			if rmErr := os.Remove(path); rmErr == nil {
+			if os.Remove(path) == nil {
 				files++
 			}
 		}
 		return nil
 	})
-
-	// prune empty dirs
 	_ = filepath.WalkDir(base, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil || d == nil || !d.IsDir() || path == base {
 			return nil
 		}
 		entries, e := os.ReadDir(path)
 		if e == nil && len(entries) == 0 {
-			if rmErr := os.Remove(path); rmErr == nil {
+			if os.Remove(path) == nil {
 				dirs++
 			}
 		}
@@ -851,36 +803,22 @@ func cleanupOrphans(base string, olderThan time.Duration) (files int, dirs int, 
 	return
 }
 
-/* =========================
-   Data types for output
-   ========================= */
-
 type SourceInfo struct {
-	Kind string `json:"kind"`           // "file" | "primary" | "pipe"
-	Path string `json:"path,omitempty"` // for file mode
+	Kind, Path string `json:"kind","path,omitempty"`
 }
 type Output struct {
 	Line       string     `json:"line"`
 	Matches    []string   `json:"matches"`
-	LineNumber int        `json:"line_number"` // 1-based original; 0 on cancel
+	LineNumber int        `json:"line_number"`
 	Source     SourceInfo `json:"source"`
 }
-
-/* =========================
-   EDIT helpers
-   ========================= */
 
 func encodeLineJSONForEditor(line string, matches []string, lineNum int, source SourceInfo, editors Editors) (string, error) {
 	path, f, err := makeTempJSON()
 	if err != nil {
 		return "", err
 	}
-	rec := Output{
-		Line:       line,
-		Matches:    matches,
-		LineNumber: lineNum,
-		Source:     source,
-	}
+	rec := Output{Line: line, Matches: matches, LineNumber: lineNum, Source: source}
 	if err := encodeJSONToFile(rec, f, editors.Pretty, editors.UseTabs, editors.Spaces); err != nil {
 		_ = f.Close()
 		_ = os.Remove(path)
@@ -888,6 +826,14 @@ func encodeLineJSONForEditor(line string, matches []string, lineNum int, source 
 	}
 	_ = f.Close()
 	return path, nil
+}
+
+func envToList(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k, v := range m {
+		out = append(out, k+"="+v)
+	}
+	return out
 }
 
 func launchEditorForMatch(cfg Config, md matchDetail, source SourceInfo, line string, matches []string, lineNum int, addErr func(string)) {
@@ -901,7 +847,6 @@ func launchEditorForMatch(cfg Config, md matchDetail, source SourceInfo, line st
 	if md.hasC {
 		env["__COLUMN__"] = strconv.Itoa(md.column)
 	}
-
 	var argv []string
 	switch {
 	case md.hasF && md.hasL && md.hasC && len(cfg.Editors.FileLineCol) > 0:
@@ -911,7 +856,6 @@ func launchEditorForMatch(cfg Config, md matchDetail, source SourceInfo, line st
 	case md.hasF && len(cfg.Editors.File) > 0:
 		argv = cfg.Editors.File
 	default:
-		// Fallback to JSON of the whole line
 		jsonPath, err := encodeLineJSONForEditor(line, matches, lineNum, source, cfg.Editors)
 		if err != nil {
 			addErr("edit: temp json create failed: " + err.Error())
@@ -924,14 +868,12 @@ func launchEditorForMatch(cfg Config, md matchDetail, source SourceInfo, line st
 			return
 		}
 	}
-
-	finalArgv := expandArgsWithEnv(argv, env, "")
-	if len(finalArgv) == 0 {
+	final := expandArgsWithEnv(argv, env, "")
+	if len(final) == 0 {
 		addErr("edit: empty editor argv")
 		return
 	}
-
-	cmd := exec.Command(finalArgv[0], finalArgv[1:]...)
+	cmd := exec.Command(final[0], final[1:]...)
 	cmd.Env = append(os.Environ(), envToList(env)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
@@ -939,29 +881,16 @@ func launchEditorForMatch(cfg Config, md matchDetail, source SourceInfo, line st
 		return
 	}
 	_ = cmd.Process.Release()
-	// show argv and json basename if used
-	argvShown := make([]string, len(finalArgv))
-	for i, a := range finalArgv {
-		argvShown[i] = shellQuote(a)
+	shown := make([]string, len(final))
+	for i, a := range final {
+		shown[i] = shellQuote(a)
 	}
-	msg := "edit: exec: " + strings.Join(argvShown, " ")
+	msg := "edit: exec: " + strings.Join(shown, " ")
 	if jp, ok := env["__JSON__"]; ok && jp != "" {
 		msg += "  (json: " + filepath.Base(jp) + ")"
 	}
 	addErr(msg)
 }
-
-func envToList(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k, v := range m {
-		out = append(out, k+"="+v)
-	}
-	return out
-}
-
-/* =========================
-   TUI
-   ========================= */
 
 func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []ColorPair, errLinesMax int, errPanel *[]string) (string, []string, int, bool, int, int) {
 	lines, info, matchLines, totalMatches, origIdx := ps.lines, ps.info, ps.matchLines, ps.totalMatches, ps.origIdx
@@ -984,6 +913,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 	highlight := styleFrom(cfg.Colors.Highlight)
 	gutterStyle := styleFrom(cfg.Colors.Gutter)
 	gutterHLStyle := styleFrom(cfg.Colors.GutterHighlight)
+	cursorGutterStyle := styleFrom(cfg.Colors.CursorGutter)
 	statusStyle := styleFrom(cfg.Colors.Status)
 	topStyle := styleFrom(cfg.Colors.TopStatus)
 	errStyle := styleFrom(cfg.Colors.ErrPanel)
@@ -1016,7 +946,6 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		}
 		return n
 	}
-
 	ellipsis := func(str string, maxw int) string {
 		if maxw <= 0 {
 			return ""
@@ -1048,14 +977,14 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 	}
 
 	cursor, offset := 0, 0
-	lnWidth := digits(len(origIdx)) // display original line numbering width
+	lnWidth := digits(len(origIdx))
 	gutterWidth := lnWidth + 2
 	contentLeft := gutterWidth
 
 	ensureCursorVisible := func() {
 		_, h := s.Size()
 		errH := getErrH()
-		usable := max(0, h-2-errH) // top + status + err panel
+		usable := max(0, h-2-errH)
 		if cursor < offset {
 			offset = cursor
 		} else if cursor >= offset+usable {
@@ -1110,7 +1039,6 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 	}
 
 	editJSONForLine := func(idx int) {
-		// JSON for whole line (even if matches exist)
 		orig := origIdx[idx] + 1
 		mt := []string{}
 		for _, m := range info[idx].matches {
@@ -1151,7 +1079,6 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		matches := info[idx].matches
 		switch len(matches) {
 		case 0:
-			// no structured match; use fallback editor with JSON of full line
 			editJSONForLine(idx)
 		case 1:
 			orig := origIdx[idx] + 1
@@ -1161,7 +1088,6 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 			}
 			launchEditorForMatch(cfg, matches[0], source, lines[idx], mt, orig, addErr)
 		default:
-			// multiple matches: guidance
 			addErr("edit: multiple matches on line — press " + rangeHint(len(matches)) + " or j to edit JSON")
 		}
 	}
@@ -1171,10 +1097,14 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		rowStyle, gutStyle := normal, gutterStyle
 		if isSel {
 			rowStyle, gutStyle = highlight, gutterHLStyle
+			// override gutter on selected row if cursor_gutter provided
+			if cfg.Colors.CursorGutter.FG != "" || cfg.Colors.CursorGutter.BG != "" {
+				gutStyle = cursorGutterStyle
+			}
 		}
 		fillRow(rowY, rowStyle)
 
-		// gutter: show original line number
+		// gutter
 		numStr := strconv.Itoa(origIdx[lineIdx] + 1)
 		pad := lnWidth - len(numStr)
 		x := 0
@@ -1185,7 +1115,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		x += putStr(x, rowY, gutStyle, numStr, -1)
 		x += putStr(x, rowY, gutStyle, ": ", -1)
 
-		// content with painted spans
+		// content with spans
 		avail := max(0, width-contentLeft)
 		if avail <= 0 {
 			for xx := x; xx < width; xx++ {
@@ -1230,9 +1160,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 	}
 
 	draw := func() {
-		// force full refresh like a resize would
 		s.Sync()
-
 		s.Clear()
 		w, h := s.Size()
 		if h <= 0 {
@@ -1244,8 +1172,11 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 
 		// top bar
 		fillRow(0, topStyle)
-		topMsg := fmt.Sprintf(" input:%s  action:%s  match-lines:%d  matches:%d  |  n:next  N:prev ",
-			source.Kind, strings.ToLower(cfg.Action), len(matchLines), totalMatches)
+		label := "match-lines"
+		if cfg.SplitOnCollision {
+			label = "match-views"
+		}
+		topMsg := fmt.Sprintf(" input:%s  action:%s  %s:%d  matches:%d  |  n:next  N:prev ", source.Kind, strings.ToLower(cfg.Action), label, len(matchLines), totalMatches)
 		putStr(0, 0, topStyle, ellipsis(topMsg, w), -1)
 
 		// content
@@ -1278,23 +1209,20 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 			}
 		}
 
-		// bottom status bar
+		// bottom status
 		statusRow := h - 1
 		fillRow(statusRow, statusStyle)
 		origNum := origIdx[cursor] + 1
 		charCount := utf8.RuneCountInString(lines[cursor])
 		base := "Enter=" + strings.ToLower(cfg.Action)
 		help := "  e/E=edit  " + rangeHint(len(info[cursor].matches)) + "  j/J=edit-json  q/Esc=quit"
-		status := fmt.Sprintf(" %d/%d (orig #%d) | chars: %d | ↑/↓ PgUp/PgDn Home/End  %s %s ",
-			cursor+1, len(lines), origNum, charCount, base, help)
+		status := fmt.Sprintf(" %d/%d (orig #%d) | chars: %d | ↑/↓ PgUp/PgDn Home/End  %s %s ", cursor+1, len(lines), origNum, charCount, base, help)
 		putStr(0, statusRow, statusStyle, ellipsis(status, w), -1)
-
 		s.Show()
 	}
 
 	ensureCursorVisible()
 	draw()
-
 	for {
 		switch e := s.PollEvent().(type) {
 		case *tcell.EventInterrupt:
@@ -1312,8 +1240,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 					editCurrent(cursor)
 					ensureCursorVisible()
 					draw()
-				default: // print
-					// assemble matches text for output
+				default:
 					mt := []string{}
 					for _, m := range info[cursor].matches {
 						mt = append(mt, m.text)
@@ -1365,7 +1292,6 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 						draw()
 					}
 				case 'j':
-					// enabled in both actions (print/edit)
 					editJSONForLine(cursor)
 					ensureCursorVisible()
 					draw()
@@ -1374,7 +1300,6 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 					ensureCursorVisible()
 					draw()
 				case 'e', 'E':
-					// edit regardless of current action
 					editCurrent(cursor)
 					ensureCursorVisible()
 					draw()
@@ -1389,7 +1314,6 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 						draw()
 					}
 				case '1', '2', '3', '4', '5', '6', '7', '8', '9', '0':
-					// numeric match selection: '1'..'9' => 0..8, '0' => 9
 					ms := info[cursor].matches
 					if len(ms) > 1 {
 						pick := -1
@@ -1405,7 +1329,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 							for _, m := range ms {
 								mt = append(mt, m.text)
 							}
-							launchEditorForMatch(cfg, ms[pick], source, lines[cursor], mt, orig, addErr)
+							launchEditorForMatch(cfg, ms[pick], source, lines[cursor], mt, orig, func(s string) { (*errPanel) = append(*errPanel, s); _ = tcell.NewEventInterrupt(nil) })
 							ensureCursorVisible()
 							draw()
 						}
@@ -1416,14 +1340,86 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 	}
 }
 
-/* =========================
-   PIPE mode (stdin streaming)
-   ========================= */
+func resolveInputModes(cfg *Config, explicit map[string]bool) (chosen, note string) {
+	expFile := explicit != nil && explicit["file"] && strings.TrimSpace(cfg.File) != ""
+	expPrimary := explicit != nil && explicit["primary"] && cfg.Primary
+	expPipe := explicit != nil && explicit["pipe"] && cfg.Pipe
+	if expFile || expPrimary || expPipe {
+		if expFile {
+			cfg.Pipe = false
+			cfg.Primary = false
+			chosen = "file"
+		} else if expPrimary {
+			cfg.Pipe = false
+			cfg.File = ""
+			chosen = "primary"
+		} else {
+			cfg.File = ""
+			cfg.Primary = false
+			chosen = "pipe"
+		}
+		count := 0
+		if expFile {
+			count++
+		}
+		if expPrimary {
+			count++
+		}
+		if expPipe {
+			count++
+		}
+		if count > 1 {
+			note = "multiple input modes specified on CLI; resolved by priority (file > primary > pipe)"
+		}
+		return
+	}
+	count := 0
+	if cfg.Pipe {
+		count++
+	}
+	if strings.TrimSpace(cfg.File) != "" {
+		count++
+	}
+	if cfg.Primary {
+		count++
+	}
+	if count <= 1 {
+		if cfg.Pipe {
+			chosen = "pipe"
+		} else if strings.TrimSpace(cfg.File) != "" {
+			chosen = "file"
+		} else if cfg.Primary {
+			chosen = "primary"
+		} else {
+			chosen = ""
+		}
+		return
+	}
+	if strings.TrimSpace(cfg.File) != "" {
+		cfg.Pipe = false
+		cfg.Primary = false
+		chosen = "file"
+		note = "multiple input modes in config; resolved by priority (file > primary > pipe)"
+		return
+	}
+	if cfg.Primary {
+		cfg.Pipe = false
+		cfg.File = ""
+		chosen = "primary"
+		note = "multiple input modes in config; resolved by priority (file > primary > pipe)"
+		return
+	}
+	cfg.File = ""
+	cfg.Primary = false
+	chosen = "pipe"
+	note = "multiple input modes in config; resolved by priority (file > primary > pipe)"
+	return
+}
 
-func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, onlyOnMatches bool, onlyView bool, noTUI bool, errLinesMax int) error {
+func runPipeMode(cfg Config, isTTYOut, emitNDJSON bool, jsonDest string, onlyOnMatches, onlyView, noTUI bool, errLinesMax int) error {
 	cRules, rulePairs := compileRules(cfg)
 
-	// capture stdin to temp file (so user can open later)
+	// capture stdin
 	root := tempRoot()
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return fmt.Errorf("mk temp dir: %w", err)
@@ -1440,41 +1436,27 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 	in.Buffer(make([]byte, 0, 64*1024), maxCap)
 
 	var lines []string
-	matchLines := make([]int, 0, 128)
-	totalMatches, lineNo := 0, 0
-
 	for in.Scan() {
 		raw := sanitize(in.Text())
-		fmt.Fprintln(os.Stdout, raw) // passthrough
-		fmt.Fprintln(outf, raw)      // capture
+		fmt.Fprintln(os.Stdout, raw)
+		fmt.Fprintln(outf, raw)
 		lines = append(lines, raw)
-		li := buildLineInfo(raw, cRules)
-		if len(li.matches) > 0 {
-			matchLines = append(matchLines, lineNo)
-			totalMatches += len(li.matches)
-		}
-		lineNo++
 	}
 	if err := in.Err(); err != nil {
 		return fmt.Errorf("reading stdin: %w", err)
 	}
 	_ = outf.Sync()
 
-	ps := preScan{
-		lines:        lines,
-		info:         make([]lineInfo, len(lines)),
-		matchLines:   matchLines,
-		totalMatches: totalMatches,
-		origIdx:      make([]int, len(lines)),
-	}
-	for i, ln := range lines {
-		ps.info[i] = buildLineInfo(ln, cRules)
-		ps.origIdx[i] = i
+	var ps preScan
+	if cfg.SplitOnCollision {
+		ps = precomputeSplitOnCollision(lines, cRules)
+	} else {
+		ps = precompute(lines, cRules)
 	}
 
-	// non-tty: cat-like; optional NDJSON
+	// non-tty
 	if !isTTYOut {
-		if emitNDJSON && totalMatches > 0 {
+		if emitNDJSON && ps.totalMatches > 0 {
 			wc, err := openDest(jsonDest)
 			if err != nil {
 				return err
@@ -1488,7 +1470,7 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 				for _, m := range ps.info[i].matches {
 					mt = append(mt, m.text)
 				}
-				rec := Output{Line: ps.lines[i], Matches: mt, LineNumber: i + 1, Source: src}
+				rec := Output{Line: ps.lines[i], Matches: mt, LineNumber: ps.origIdx[i] + 1, Source: src}
 				if err := enc.Encode(rec); err != nil {
 					return err
 				}
@@ -1497,16 +1479,14 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 		return nil
 	}
 
-	// View filtering
 	if onlyView {
 		ps = filterToMatches(ps)
 	}
-
-	// TTY decisions
-	if onlyOnMatches && totalMatches == 0 {
+	if onlyOnMatches && ps.totalMatches == 0 {
 		return nil
 	}
-	if emitNDJSON && totalMatches > 0 {
+
+	if emitNDJSON && ps.totalMatches > 0 {
 		wc, err := openDest(jsonDest)
 		if err != nil {
 			return err
@@ -1535,7 +1515,6 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 	var panel []string
 	lineText, matchesText, lineNum, ok, _, _ := runListUIWithRules(ps, cfg, src, rulePairs, errLinesMax, &panel)
 
-	// replay error panel after exit
 	if len(panel) > 0 {
 		fmt.Fprintln(os.Stderr, "--- output-tool messages ---")
 		for _, m := range panel {
@@ -1561,18 +1540,11 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 	return nil
 }
 
-/* =========================
-   Main
-   ========================= */
-
 func main() {
 	flag.Parse()
-
-	// track which flags were explicitly set (so CLI can override config cleanly)
 	set := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
-	// handle writing a NEW config (do not read any existing configs)
 	if *flagOutputNew {
 		var outPath string
 		if *flagConfig == "::default::" {
@@ -1582,10 +1554,8 @@ func main() {
 			}
 			outPath = dp
 		} else {
-			outPath = *flagConfig // empty => stdout
+			outPath = *flagConfig
 		}
-
-		// build defaults, then apply CLI overrides
 		cfg := defaultConfig()
 		if set["err-lines"] {
 			cfg.UI.ErrLinesMax = *flagErrLinesMax
@@ -1593,7 +1563,6 @@ func main() {
 		if set["action"] {
 			cfg.Action = strings.ToLower(strings.TrimSpace(*flagAction))
 		}
-		// serialize any provided CLI toggles into the new config
 		if set["pipe"] {
 			cfg.Pipe = *flagPipe
 		}
@@ -1618,13 +1587,15 @@ func main() {
 		if set["no-tui"] {
 			cfg.NoTUI = *flagNoTUI
 		}
+		if set["split-on-collision"] {
+			cfg.SplitOnCollision = *flagSplitOnCol
+		}
 
-		// Resolve input mode conflicts (file > primary > pipe)
 		_, note := resolveInputModes(&cfg, set)
 		if note != "" {
 			fmt.Fprintln(os.Stderr, note)
 		}
-		// write it (with overwrite confirmation if file exists and not --force)
+
 		if outPath == "" {
 			if err := writeConfigTo("", cfg); err != nil {
 				log.Fatalf("failed to write new config: %v", err)
@@ -1649,40 +1620,34 @@ func main() {
 		return
 	}
 
-	// ----- Config discovery (precedence) -----
-	// 1) CLI --config path (if provided)  2) ./<exe>-config.toml  3) user default  4) built-in
+	// load config with precedence
 	cfg := defaultConfig()
 	var pathToLoad string
-
 	switch {
 	case *flagConfig != "" && *flagConfig != "::default::":
 		pathToLoad = *flagConfig
 	case *flagConfig == "" || *flagConfig == "::default::":
-		// CWD first
 		if fileExists(cwdConfigPath()) {
 			pathToLoad = cwdConfigPath()
 			break
 		}
-		// user default
 		if dp, err := defaultConfigPath(); err == nil && fileExists(dp) {
 			pathToLoad = dp
 		}
 	}
-
 	if pathToLoad != "" {
 		if _, err := toml.DecodeFile(pathToLoad, &cfg); err != nil {
 			log.Fatalf("failed to load config: %v", err)
 		}
 	}
 
-	// ----- Apply CLI overrides -----
+	// CLI overrides
 	if set["action"] {
 		cfg.Action = strings.ToLower(strings.TrimSpace(*flagAction))
 	}
 	if set["err-lines"] {
 		cfg.UI.ErrLinesMax = *flagErrLinesMax
 	}
-	// input mode knobs
 	if set["pipe"] {
 		cfg.Pipe = *flagPipe
 	}
@@ -1692,7 +1657,6 @@ func main() {
 	if set["primary"] {
 		cfg.Primary = *flagPrimary
 	}
-	// other toggles
 	if set["only-on-matches"] {
 		cfg.OnlyOnMatches = *flagOnlyOnMatches
 	}
@@ -1708,19 +1672,21 @@ func main() {
 	if set["no-tui"] {
 		cfg.NoTUI = *flagNoTUI
 	}
+	if set["split-on-collision"] {
+		cfg.SplitOnCollision = *flagSplitOnCol
+	}
 
-	// Resolve input mode conflicts with same priority (file > primary > pipe)
+	// resolve + validate
 	_, note := resolveInputModes(&cfg, set)
 	if note != "" {
 		fmt.Fprintln(os.Stderr, note)
 	}
-	// normalize/validate
 	cfg.Action = strings.ToLower(strings.TrimSpace(cfg.Action))
 	if cfg.Action != "print" && cfg.Action != "edit" {
 		cfg.Action = "edit"
 	}
 	if cfg.Cleanup.AgeMinutes <= 0 {
-		cfg.Cleanup.AgeMinutes = 5
+		cfg.Cleanup.AgeMinutes = 60
 	}
 	if cfg.UI.ErrLinesMax <= 0 {
 		cfg.UI.ErrLinesMax = 5
@@ -1731,26 +1697,20 @@ func main() {
 	if strings.TrimSpace(cfg.JSONDest) == "" {
 		cfg.JSONDest = "stderr"
 	}
-
-	// Ensure at least one input mode is selected after resolution
 	if !cfg.Pipe && strings.TrimSpace(cfg.File) == "" && !cfg.Primary {
-		fmt.Fprintln(os.Stderr, "error: no input selected; set one of: pipe=true, file=..., or primary=true (config and/or CLI)")
+		fmt.Fprintln(os.Stderr, "error: no input selected; set one of: pipe=true, file=..., or primary=true")
 		os.Exit(2)
 	}
 
-	// auto- or on-demand cleanup
+	// cleanup
 	if cfg.Cleanup.Enabled || *flagCleanupNow {
 		files, dirs, _ := cleanupOrphans(tempBase(), time.Duration(cfg.Cleanup.AgeMinutes)*time.Minute)
 		if files+dirs > 0 {
-			fmt.Fprintf(os.Stderr, "cleanup-orphaned: removed %d files, %d dirs from %s (older than %d minutes)\n",
-				files, dirs, tempBase(), cfg.Cleanup.AgeMinutes)
+			fmt.Fprintf(os.Stderr, "cleanup-orphaned: removed %d files, %d dirs from %s (older than %d minutes)\n", files, dirs, tempBase(), cfg.Cleanup.AgeMinutes)
 		}
 	}
 
-	// tty detection
 	isTTYOut := term.IsTerminal(int(os.Stdout.Fd()))
-
-	// PIPE MODE
 	if cfg.Pipe {
 		if err := runPipeMode(cfg, isTTYOut, cfg.JSONMatches, cfg.JSONDest, cfg.OnlyOnMatches, cfg.OnlyViewMatches, cfg.NoTUI, cfg.UI.ErrLinesMax); err != nil {
 			log.Fatalf("pipe mode error: %v", err)
@@ -1758,10 +1718,9 @@ func main() {
 		return
 	}
 
-	// PRIMARY / FILE MODE
+	// Primary/File path
 	var lines []string
 	source := SourceInfo{Kind: "file"}
-
 	if cfg.Primary {
 		source.Kind = "primary"
 		txt, err := readPrimaryWithXclip()
@@ -1799,21 +1758,20 @@ func main() {
 		}
 	}
 
-	// compile + pre-scan
 	cRules, rulePairs := compileRules(cfg)
-	ps := precompute(lines, cRules)
-
-	// optional view filter
+	var ps preScan
+	if cfg.SplitOnCollision {
+		ps = precomputeSplitOnCollision(lines, cRules)
+	} else {
+		ps = precompute(lines, cRules)
+	}
 	if cfg.OnlyViewMatches {
 		ps = filterToMatches(ps)
 	}
-
-	// open only on matches if requested
 	if cfg.OnlyOnMatches && ps.totalMatches == 0 {
 		return
 	}
 
-	// optional NDJSON before TUI
 	if cfg.JSONMatches && ps.totalMatches > 0 {
 		wc, err := openDest(cfg.JSONDest)
 		if err != nil {
@@ -1822,7 +1780,6 @@ func main() {
 		enc := json.NewEncoder(wc)
 		enc.SetEscapeHTML(false)
 		for i := range ps.lines {
-			// only emit for lines with matches
 			if len(ps.info[i].matches) == 0 {
 				continue
 			}
@@ -1842,19 +1799,14 @@ func main() {
 		return
 	}
 
-	// TUI
 	var panel []string
 	lineText, matchesText, lineNum, ok, _, _ := runListUIWithRules(ps, cfg, source, rulePairs, cfg.UI.ErrLinesMax, &panel)
-
-	// replay panel after exit
 	if len(panel) > 0 {
 		fmt.Fprintln(os.Stderr, "--- output-tool messages ---")
 		for _, m := range panel {
 			fmt.Fprintln(os.Stderr, m)
 		}
 	}
-
-	// print result only in print mode
 	if strings.ToLower(cfg.Action) == "print" {
 		out := Output{Source: source}
 		if ok {
