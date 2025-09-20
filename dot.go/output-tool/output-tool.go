@@ -57,12 +57,15 @@ type Editors struct {
 	FileLine    []string `toml:"file_line"`     // e.g. ["cudatext","${__FILE__}@${__LINE__}"]
 	FileLineCol []string `toml:"file_line_col"` // e.g. ["cudatext","${__FILE__}@${__LINE__}@${__COLUMN__}"]
 	Fallback    []string `toml:"fallback"`      // e.g. ["cudatext","${__JSON__}"]
+
+	Pretty  bool `toml:"pretty"`   // pretty-print JSON files for editors
+	UseTabs bool `toml:"use_tabs"` // pretty indent uses tabs if true; else spaces
+	Spaces  int  `toml:"spaces"`   // number of spaces if UseTabs=false (default 4)
 }
 
 type Config struct {
-	// Action on Enter in TUI: "print" | "spawn" | "edit"
-	Action  string   `toml:"action"`
-	Command []string `toml:"command"` // argv; supports ${VAR} and "<path>"
+	// Action on Enter in TUI: "print" | "edit"
+	Action string `toml:"action"`
 
 	Colors struct {
 		Normal          ColorPair `toml:"normal"`
@@ -84,7 +87,6 @@ func defaultConfig() Config {
 	var c Config
 	// default behavior: print json on Enter
 	c.Action = "print"
-	c.Command = []string{"xfce4-terminal", "--window", "--working-directory=${PWD}", "--execute", "less", "<path>"}
 
 	// colors (names or #rrggbb or palette:N)
 	c.Colors.Normal = ColorPair{FG: "white", BG: "black"}
@@ -119,6 +121,9 @@ func defaultConfig() Config {
 	c.Editors.FileLine = []string{"cudatext", "${__FILE__}@${__LINE__}"}
 	c.Editors.FileLineCol = []string{"cudatext", "${__FILE__}@${__LINE__}@${__COLUMN__}"}
 	c.Editors.Fallback = []string{"cudatext", "${__JSON__}"}
+	c.Editors.Pretty = true
+	c.Editors.UseTabs = true
+	c.Editors.Spaces = 4
 
 	return c
 }
@@ -136,12 +141,13 @@ var (
 	flagPrimary       = flag.Bool("primary", false, "use PRIMARY selection via xclip as input (mutually exclusive with --file/--pipe)")
 	flagPipe          = flag.Bool("pipe", false, "read from stdin, pass-through to stdout in real time, then optionally open TUI")
 	flagOnlyOnMatches = flag.Bool("only-on-matches", false, "if there are no matches, exit without opening the TUI")
-	flagJSONMatches   = flag.Bool("json-matches", false, "emit NDJSON for each matching line (pre-TUI/quasi-print)")
-	flagJSONDest      = flag.String("json-dest", "stderr", "NDJSON destination: stderr|stdout|/path/to/file")
-	flagNoTUI         = flag.Bool("no-tui", false, "when emitting NDJSON, skip TUI and exit")
+	flagOnlyViewMatch = flag.Bool("only-view-matches", false, "show only lines that have matches in the TUI (line numbers remain original)")
+
+	flagJSONMatches = flag.Bool("json-matches", false, "emit NDJSON for each matching line (pre-TUI/quasi-print)")
+	flagJSONDest    = flag.String("json-dest", "stderr", "NDJSON destination: stderr|stdout|/path/to/file")
+	flagNoTUI       = flag.Bool("no-tui", false, "when emitting NDJSON, skip TUI and exit")
 
 	flagErrLinesMax = flag.Int("err-lines", 5, "max lines for bottom error panel (0 disables)")
-	flagSpawnDryRun = flag.Bool("spawn-dry-run", false, "do not spawn; log argv with placeholders resolved to the error panel")
 
 	flagCleanupNow = flag.Bool("cleanup-orphaned", false, "cleanup old temp files at startup (uses config.cleanup.age_minutes)")
 )
@@ -220,6 +226,28 @@ func expandArgsWithEnv(argv []string, extra map[string]string, path string) []st
 		out = append(out, a)
 	}
 	return out
+}
+
+// JSON pretty helper
+func encodeJSONToFile(v any, f *os.File, pretty bool, useTabs bool, spaces int) error {
+	var b []byte
+	var err error
+	if pretty {
+		indent := "    "
+		if useTabs {
+			indent = "\t"
+		} else if spaces > 0 {
+			indent = strings.Repeat(" ", spaces)
+		}
+		b, err = json.MarshalIndent(v, "", indent)
+	} else {
+		b, err = json.Marshal(v)
+	}
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(append(b, '\n'))
+	return err
 }
 
 // sanitize: drop control chars except tab to avoid rendering artifacts
@@ -581,10 +609,11 @@ type preScan struct {
 	info         []lineInfo
 	matchLines   []int
 	totalMatches int
+	origIdx      []int // original indices for each displayed line
 }
 
 func precompute(lines []string, rules []compiledRule) preScan {
-	ps := preScan{lines: lines, info: make([]lineInfo, len(lines))}
+	ps := preScan{lines: lines, info: make([]lineInfo, len(lines)), origIdx: make([]int, len(lines))}
 	for i, ln := range lines {
 		li := buildLineInfo(ln, rules)
 		ps.info[i] = li
@@ -592,8 +621,35 @@ func precompute(lines []string, rules []compiledRule) preScan {
 			ps.matchLines = append(ps.matchLines, i)
 		}
 		ps.totalMatches += len(li.matches)
+		ps.origIdx[i] = i
 	}
 	return ps
+}
+
+func filterToMatches(ps preScan) preScan {
+	if len(ps.matchLines) == 0 {
+		return preScan{lines: []string{}, info: []lineInfo{}, matchLines: []int{}, totalMatches: 0, origIdx: []int{}}
+	}
+	var lines []string
+	var info []lineInfo
+	var origIdx []int
+	for _, i := range ps.matchLines {
+		lines = append(lines, ps.lines[i])
+		info = append(info, ps.info[i])
+		origIdx = append(origIdx, ps.origIdx[i])
+	}
+	// in filtered view, every line has matches
+	newMatchLines := make([]int, len(lines))
+	for i := range newMatchLines {
+		newMatchLines[i] = i
+	}
+	return preScan{
+		lines:        lines,
+		info:         info,
+		matchLines:   newMatchLines,
+		totalMatches: ps.totalMatches,
+		origIdx:      origIdx,
+	}
 }
 
 /* =========================
@@ -695,7 +751,7 @@ type SourceInfo struct {
 type Output struct {
 	Line       string     `json:"line"`
 	Matches    []string   `json:"matches"`
-	LineNumber int        `json:"line_number"` // 1-based; 0 on cancel
+	LineNumber int        `json:"line_number"` // 1-based original; 0 on cancel
 	Source     SourceInfo `json:"source"`
 }
 
@@ -703,7 +759,27 @@ type Output struct {
    EDIT helpers
    ========================= */
 
-func launchEditorForMatch(cfg Config, md matchDetail, source SourceInfo, addErr func(string)) {
+func encodeLineJSONForEditor(line string, matches []string, lineNum int, source SourceInfo, editors Editors) (string, error) {
+	path, f, err := makeTempJSON()
+	if err != nil {
+		return "", err
+	}
+	rec := Output{
+		Line:       line,
+		Matches:    matches,
+		LineNumber: lineNum,
+		Source:     source,
+	}
+	if err := encodeJSONToFile(rec, f, editors.Pretty, editors.UseTabs, editors.Spaces); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	_ = f.Close()
+	return path, nil
+}
+
+func launchEditorForMatch(cfg Config, md matchDetail, source SourceInfo, line string, matches []string, lineNum int, addErr func(string)) {
 	env := map[string]string{}
 	if md.hasF {
 		env["__FILE__"] = md.file
@@ -724,28 +800,13 @@ func launchEditorForMatch(cfg Config, md matchDetail, source SourceInfo, addErr 
 	case md.hasF && len(cfg.Editors.File) > 0:
 		argv = cfg.Editors.File
 	default:
-		// Fallback to JSON
-		path, f, err := makeTempJSON()
+		// Fallback to JSON of the whole line
+		jsonPath, err := encodeLineJSONForEditor(line, matches, lineNum, source, cfg.Editors)
 		if err != nil {
 			addErr("edit: temp json create failed: " + err.Error())
 			return
 		}
-		rec := Output{
-			Line:       md.text,
-			Matches:    []string{md.text},
-			LineNumber: 0,
-			Source:     source,
-		}
-		enc := json.NewEncoder(f)
-		enc.SetEscapeHTML(false)
-		if err := enc.Encode(rec); err != nil {
-			_ = f.Close()
-			_ = os.Remove(path)
-			addErr("edit: write json failed: " + err.Error())
-			return
-		}
-		_ = f.Close()
-		env["__JSON__"] = path
+		env["__JSON__"] = jsonPath
 		argv = cfg.Editors.Fallback
 		if len(argv) == 0 {
 			addErr("edit: no fallback editor defined")
@@ -756,14 +817,6 @@ func launchEditorForMatch(cfg Config, md matchDetail, source SourceInfo, addErr 
 	finalArgv := expandArgsWithEnv(argv, env, "")
 	if len(finalArgv) == 0 {
 		addErr("edit: empty editor argv")
-		return
-	}
-	if *flagSpawnDryRun {
-		pretty := strings.Join(finalArgv, " ")
-		if len(pretty) > 120 && len(finalArgv) >= 2 {
-			pretty = shellQuote(finalArgv[0]) + " … " + shellQuote(finalArgv[len(finalArgv)-1])
-		}
-		addErr("edit (dry-run): " + pretty)
 		return
 	}
 
@@ -791,7 +844,7 @@ func envToList(m map[string]string) []string {
    ========================= */
 
 func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []ColorPair, errLinesMax int, errPanel *[]string) (string, []string, int, bool, int, int) {
-	lines, info, matchLines, totalMatches := ps.lines, ps.info, ps.matchLines, ps.totalMatches
+	lines, info, matchLines, totalMatches, origIdx := ps.lines, ps.info, ps.matchLines, ps.totalMatches, ps.origIdx
 	if len(lines) == 0 {
 		return "", nil, 0, false, 0, 0
 	}
@@ -866,7 +919,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 	}
 
 	cursor, offset := 0, 0
-	lnWidth := digits(len(lines))
+	lnWidth := digits(len(origIdx)) // display original line numbering width
 	gutterWidth := lnWidth + 2
 	contentLeft := gutterWidth
 
@@ -927,52 +980,38 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		return true
 	}
 
-	spawnCurrent := func(idx int) {
-		rec := Output{Line: lines[idx], Matches: nil, LineNumber: idx + 1, Source: source}
+	editJSONForLine := func(idx int) {
+		// JSON for whole line (even if matches exist)
+		orig := origIdx[idx] + 1
+		mt := []string{}
 		for _, m := range info[idx].matches {
-			rec.Matches = append(rec.Matches, m.text)
+			mt = append(mt, m.text)
 		}
-
-		if strings.ToLower(cfg.Action) == "spawn" {
-			path, f, err := makeTempJSON()
-			if err != nil {
-				addErr("temp file create failed: " + err.Error())
-				return
-			}
-			enc := json.NewEncoder(f)
-			enc.SetEscapeHTML(false)
-			if err := enc.Encode(rec); err != nil {
-				_ = f.Close()
-				_ = os.Remove(path)
-				addErr("write json failed: " + err.Error())
-				return
-			}
-			_ = f.Close()
-
-			argv := expandArgsWithEnv(cfg.Command, map[string]string{}, path)
-			if len(argv) == 0 {
-				addErr("spawn: empty argv")
-				return
-			}
-			if *flagSpawnDryRun {
-				pretty := strings.Join(argv, " ")
-				if len(pretty) > 120 && len(argv) >= 2 {
-					pretty = shellQuote(argv[0]) + " … " + shellQuote(argv[len(argv)-1])
-				}
-				addErr("spawn (dry-run): " + pretty)
-				_ = os.Remove(path)
-				return
-			}
-			cmd := exec.Command(argv[0], argv[1:]...)
-			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-			if err := cmd.Start(); err != nil {
-				addErr("spawn failed: " + err.Error())
-				_ = os.Remove(path)
-				return
-			}
-			_ = cmd.Process.Release()
-			addErr(fmt.Sprintf("spawned: pid %d  file %s", cmd.Process.Pid, path))
+		jsonPath, err := encodeLineJSONForEditor(lines[idx], mt, orig, source, cfg.Editors)
+		if err != nil {
+			addErr("edit-json: " + err.Error())
+			return
 		}
+		env := map[string]string{"__JSON__": jsonPath}
+		argv := cfg.Editors.Fallback
+		if len(argv) == 0 {
+			addErr("edit-json: no fallback editor defined")
+			return
+		}
+		final := expandArgsWithEnv(argv, env, "")
+		if len(final) == 0 {
+			addErr("edit-json: empty argv")
+			return
+		}
+		cmd := exec.Command(final[0], final[1:]...)
+		cmd.Env = append(os.Environ(), envToList(env)...)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := cmd.Start(); err != nil {
+			addErr("edit-json: spawn failed: " + err.Error())
+			return
+		}
+		_ = cmd.Process.Release()
+		addErr(fmt.Sprintf("edit-json: spawned pid %d", cmd.Process.Pid))
 	}
 
 	editCurrent := func(idx int) {
@@ -980,10 +1019,14 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		switch len(matches) {
 		case 0:
 			// no structured match; use fallback editor with JSON of full line
-			md := matchDetail{text: lines[idx]}
-			launchEditorForMatch(cfg, md, source, addErr)
+			editJSONForLine(idx)
 		case 1:
-			launchEditorForMatch(cfg, matches[0], source, addErr)
+			orig := origIdx[idx] + 1
+			mt := []string{}
+			for _, m := range info[idx].matches {
+				mt = append(mt, m.text)
+			}
+			launchEditorForMatch(cfg, matches[0], source, lines[idx], mt, orig, addErr)
 		default:
 			// for now, single-match only per request; notify
 			addErr("edit: multiple matches on line; numeric selection not implemented yet")
@@ -998,8 +1041,8 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		}
 		fillRow(rowY, rowStyle)
 
-		// gutter
-		numStr := strconv.Itoa(lineIdx + 1)
+		// gutter: show original line number
+		numStr := strconv.Itoa(origIdx[lineIdx] + 1)
 		pad := lnWidth - len(numStr)
 		x := 0
 		for j := 0; j < pad; j++ {
@@ -1105,17 +1148,12 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 		// bottom status bar
 		statusRow := h - 1
 		fillRow(statusRow, statusStyle)
-		lineNum := clamp(cursor+1, 1, len(lines))
+		origNum := origIdx[cursor] + 1
 		charCount := utf8.RuneCountInString(lines[cursor])
-		actionLabel := "select"
-		switch strings.ToLower(cfg.Action) {
-		case "spawn":
-			actionLabel = "spawn"
-		case "edit":
-			actionLabel = "edit"
-		}
-		status := fmt.Sprintf(" %d/%d  |  chars: %d  |  ↑/↓ PgUp/PgDn Home/End  Enter=%s  q/Esc=quit ",
-			lineNum, len(lines), charCount, actionLabel)
+		base := "Enter=" + strings.ToLower(cfg.Action)
+		help := "  e/E=edit  j/J=edit-json  q/Esc=quit"
+		status := fmt.Sprintf(" %d/%d (orig #%d) | chars: %d | ↑/↓ PgUp/PgDn Home/End  %s %s ",
+			cursor+1, len(lines), origNum, charCount, base, help)
 		putStr(0, statusRow, statusStyle, ellipsis(status, w), -1)
 
 		s.Show()
@@ -1137,10 +1175,6 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 			switch e.Key() {
 			case tcell.KeyEnter:
 				switch strings.ToLower(cfg.Action) {
-				case "spawn":
-					spawnCurrent(cursor)
-					ensureCursorVisible()
-					draw()
 				case "edit":
 					editCurrent(cursor)
 					ensureCursorVisible()
@@ -1151,7 +1185,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 					for _, m := range info[cursor].matches {
 						mt = append(mt, m.text)
 					}
-					return lines[cursor], mt, cursor + 1, true, len(matchLines), totalMatches
+					return lines[cursor], mt, origIdx[cursor] + 1, true, len(matchLines), totalMatches
 				}
 			case tcell.KeyEscape:
 				return "", nil, 0, false, len(matchLines), totalMatches
@@ -1198,11 +1232,25 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
 						draw()
 					}
 				case 'j':
-					if cursor < len(lines)-1 {
-						cursor++
+					if strings.ToLower(cfg.Action) == "edit" {
+						editJSONForLine(cursor)
+						ensureCursorVisible()
+						draw()
+					} else {
+						// also allowed even in print mode per request
+						editJSONForLine(cursor)
 						ensureCursorVisible()
 						draw()
 					}
+				case 'J':
+					editJSONForLine(cursor)
+					ensureCursorVisible()
+					draw()
+				case 'e', 'E':
+					// edit regardless of current action
+					editCurrent(cursor)
+					ensureCursorVisible()
+					draw()
 				case 'n':
 					if nextMatch() {
 						ensureCursorVisible()
@@ -1223,7 +1271,7 @@ func runListUIWithRules(ps preScan, cfg Config, source SourceInfo, rulePairs []C
    PIPE mode (stdin streaming)
    ========================= */
 
-func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, onlyOnMatches bool, noTUI bool, errLinesMax int) error {
+func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, onlyOnMatches bool, onlyView bool, noTUI bool, errLinesMax int) error {
 	cRules, rulePairs := compileRules(cfg)
 
 	// capture stdin to temp file (so user can open later)
@@ -1268,9 +1316,11 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 		info:         make([]lineInfo, len(lines)),
 		matchLines:   matchLines,
 		totalMatches: totalMatches,
+		origIdx:      make([]int, len(lines)),
 	}
 	for i, ln := range lines {
 		ps.info[i] = buildLineInfo(ln, cRules)
+		ps.origIdx[i] = i
 	}
 
 	// non-tty: cat-like; optional NDJSON
@@ -1285,7 +1335,6 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 			enc.SetEscapeHTML(false)
 			src := SourceInfo{Kind: "pipe"}
 			for _, i := range ps.matchLines {
-				// assemble matches text
 				mt := []string{}
 				for _, m := range ps.info[i].matches {
 					mt = append(mt, m.text)
@@ -1297,6 +1346,11 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 			}
 		}
 		return nil
+	}
+
+	// View filtering
+	if onlyView {
+		ps = filterToMatches(ps)
 	}
 
 	// TTY decisions
@@ -1316,7 +1370,7 @@ func runPipeMode(cfg Config, isTTYOut bool, emitNDJSON bool, jsonDest string, on
 			for _, m := range ps.info[i].matches {
 				mt = append(mt, m.text)
 			}
-			rec := Output{Line: ps.lines[i], Matches: mt, LineNumber: i + 1, Source: src}
+			rec := Output{Line: ps.lines[i], Matches: mt, LineNumber: ps.origIdx[i] + 1, Source: src}
 			if err := enc.Encode(rec); err != nil {
 				_ = wc.Close()
 				return err
@@ -1454,7 +1508,7 @@ func main() {
 	}
 
 	cfg.Action = strings.ToLower(strings.TrimSpace(cfg.Action))
-	if cfg.Action != "print" && cfg.Action != "spawn" && cfg.Action != "edit" {
+	if cfg.Action != "print" && cfg.Action != "edit" {
 		cfg.Action = "print"
 	}
 	if cfg.Cleanup.AgeMinutes <= 0 {
@@ -1462,6 +1516,9 @@ func main() {
 	}
 	if cfg.UI.ErrLinesMax <= 0 {
 		cfg.UI.ErrLinesMax = 5
+	}
+	if cfg.Editors.Spaces <= 0 {
+		cfg.Editors.Spaces = 4
 	}
 
 	// effective err panel height: CLI overrides config if provided
@@ -1484,7 +1541,7 @@ func main() {
 
 	// PIPE MODE
 	if *flagPipe {
-		if err := runPipeMode(cfg, isTTYOut, *flagJSONMatches, *flagJSONDest, *flagOnlyOnMatches, *flagNoTUI, effectiveErrLines); err != nil {
+		if err := runPipeMode(cfg, isTTYOut, *flagJSONMatches, *flagJSONDest, *flagOnlyOnMatches, *flagOnlyViewMatch, *flagNoTUI, effectiveErrLines); err != nil {
 			log.Fatalf("pipe mode error: %v", err)
 		}
 		return
@@ -1535,6 +1592,11 @@ func main() {
 	cRules, rulePairs := compileRules(cfg)
 	ps := precompute(lines, cRules)
 
+	// optional view filter
+	if *flagOnlyViewMatch {
+		ps = filterToMatches(ps)
+	}
+
 	// open only on matches if requested
 	if *flagOnlyOnMatches && ps.totalMatches == 0 {
 		return
@@ -1548,12 +1610,16 @@ func main() {
 		}
 		enc := json.NewEncoder(wc)
 		enc.SetEscapeHTML(false)
-		for _, i := range ps.matchLines {
+		for i := range ps.lines {
+			// only emit for lines with matches
+			if len(ps.info[i].matches) == 0 {
+				continue
+			}
 			mt := []string{}
 			for _, m := range ps.info[i].matches {
 				mt = append(mt, m.text)
 			}
-			rec := Output{Line: ps.lines[i], Matches: mt, LineNumber: i + 1, Source: source}
+			rec := Output{Line: ps.lines[i], Matches: mt, LineNumber: ps.origIdx[i] + 1, Source: source}
 			if err := enc.Encode(rec); err != nil {
 				_ = wc.Close()
 				log.Fatalf("json encode error: %v", err)
