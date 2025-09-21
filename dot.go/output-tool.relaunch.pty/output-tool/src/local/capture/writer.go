@@ -7,9 +7,10 @@ import (
 )
 
 type Rec struct {
-	N    int    `json:"n"`
-	Text string `json:"text"`
-	M    bool   `json:"m"`
+	N      int    `json:"n"`
+	Text   string `json:"text"`
+	M      bool   `json:"m"`
+	Stream string `json:"s,omitempty"` // "out" or "err" for --exec; empty otherwise
 }
 
 type Writer struct {

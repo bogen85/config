@@ -19,6 +19,7 @@ import (
 	"local/cleanup"
 	"local/config"
 	"local/editor"
+	"local/execcap"
 	"local/launcher"
 	"local/rules"
 	"local/viewer"
@@ -34,6 +35,7 @@ var (
 	// Modes
 	flagPipe = flag.Bool("pipe", false, "Read from stdin; stream to stdout, capture JSONL, and (optionally) launch viewer in a new terminal")
 	flagFile = flag.String("file", "", "Read from file PATH and view inline")
+	flagExec = flag.Bool("exec", true, "If extra args are present, run them as a command (set --exec=false to forbid)")
 
 	// Pipe behavior
 	flagOnlyView    = flag.Bool("only-view-matches", defaultConfig.Behavior.OnlyViewMatches, "Viewer shows only matching lines (capture filtered in pipe)")
@@ -172,7 +174,10 @@ func main() {
 		return
 	}
 
-	// modes: exactly one of pipe|file
+	// modes: exactly one of pipe|file|exec
+	args := flag.Args()
+	execImplied := *flagExec && len(args) > 0
+
 	modes := 0
 	if *flagPipe {
 		modes++
@@ -180,14 +185,19 @@ func main() {
 	if *flagFile != "" {
 		modes++
 	}
+	if execImplied {
+		modes++
+	}
 	if modes != 1 {
+		if len(args) > 0 && !*flagExec {
+			fmt.Fprintln(os.Stderr, "error: extra arguments present but --exec=false was set")
+		}
 		usage()
 		os.Exit(2)
 	}
 
 	// compile rules from cfg
 	rs := compileRules(cfg)
-
 	if *flagPipe {
 		runPipe(rs, cfg)
 		return
@@ -196,6 +206,11 @@ func main() {
 		runFile(rs, *flagFile)
 		return
 	}
+	if execImplied {
+		runExec(rs, cfg, args)
+		return
+	}
+
 }
 
 // ---------- Config <-> Flags glue ----------
@@ -314,6 +329,45 @@ func compileRules(cfg *config.Config) []rules.Rule {
 }
 
 // ---------- Pipe / File / Viewer implementations ----------
+func runExec(rs []rules.Rule, cfg *config.Config, cmdArgs []string) {
+	// run command & capture
+	res, err := execcap.Run(cmdArgs, rs, execcap.Options{
+		OnlyViewMatches: *flagOnlyView,
+		MatchStderr:     *flagMatchStderr,
+	})
+	if err != nil {
+		fatalf("exec: %v", err)
+	}
+
+	// respect only-on-matches
+	if *flagOnlyOnMatch && !res.AnyMatch {
+		_ = os.Remove(res.CapturePath)
+		_ = os.Remove(res.CapturePath + ".meta.json") // in case future changes wrote meta separately
+		return
+	}
+
+	// viewer inline (no relaunch)
+	vopts := viewer.Options{
+		Title:         *flagViewerTitle,
+		GutterWidth:   *flagGutterWidth,
+		ShowTopBar:    *flagTopBar,
+		ShowBottomBar: *flagBottomBar,
+		Mouse:         *flagMouse,
+		NoAlt:         *flagNoAlt,
+	}
+	eh := editor.Config{EditorExe: *flagEditorExe, EditorArgPrefix: *flagEditorPrefx}
+
+	run := func() error {
+		// meta is already in res.Meta (Temp=false)
+		return viewer.RunFromFile(res.CapturePath, &res.Meta, rs, vopts, viewer.Hooks{
+			OnActivate: func(lineText string) { editor.LaunchForLine(lineText, rs, eh) },
+		})
+	}
+	ccfg := cleanup.Config{KeepCapture: *flagKeepCapture, TTLMinutes: *flagTTLMinutes}
+	if err := cleanup.WrapWithSignals(run, &res.Meta, ccfg, res.CapturePath, res.CapturePath+".meta.json"); err != nil {
+		fatalf("viewer: %v", err)
+	}
+}
 
 func runPipe(rs []rules.Rule, cfg *config.Config) {
 	// Create temp writer

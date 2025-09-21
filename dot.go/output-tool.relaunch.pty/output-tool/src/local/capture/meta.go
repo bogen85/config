@@ -1,12 +1,13 @@
 package capture
 
-type Meta struct {
-	Version int `json:"version"`
-	Source  struct {
-		Mode string `json:"mode"` // pipe|file
-		Arg  string `json:"arg"`
-	} `json:"source"`
+type Source struct {
+	Mode string `json:"mode"` // pipe|file|exec
+	Arg  string `json:"arg"`
+}
 
+type Meta struct {
+	Version        int      `json:"version"`
+	Source         Source   `json:"source"`
 	CapturePath    string   `json:"capture_path"`
 	Filtered       bool     `json:"filtered"`
 	LineFormat     string   `json:"line_format"`
