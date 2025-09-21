@@ -52,7 +52,7 @@ all: build
 build:
 	$_
 	: @ mkdir -p $(BIN)
-	: @ $(GO) build -o $(BIN)/$(APP) $(SRC)/*.go
+	: @ $(GO) build -o $(BIN)/$(APP) -v $(SRC)/*.go
 
 fmt:
 	$_
