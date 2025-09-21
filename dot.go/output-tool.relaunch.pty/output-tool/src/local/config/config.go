@@ -35,7 +35,9 @@ type Editor struct {
 }
 
 type Launcher struct {
-	Prefix string `toml:"prefix"`
+	Prefix     string `toml:"prefix"`      // graphical terminal (existing)
+	TmuxPrefix string `toml:"tmux_prefix"` // tmux popup command prefix
+	PreferTmux bool   `toml:"prefer_tmux"` // prefer tmux when available (auto-detect)
 }
 
 type Behavior struct {
@@ -84,8 +86,9 @@ func Default() *Config {
 			ArgPrefix: "",
 		},
 		Launcher: Launcher{
-			// xfce4-terminal example; user may change
-			Prefix: "xfce4-terminal --hide-menubar --hide-scrollbar --hide-toolbar --title='OutputTool' --command",
+			Prefix:     "xfce4-terminal --hide-menubar --hide-scrollbar --hide-toolbar --title='OutputTool' --command",
+			TmuxPrefix: "tmux display-popup -E -w 100% -h 100% --",
+			PreferTmux: true,
 		},
 		Behavior: Behavior{
 			OnlyViewMatches: false,

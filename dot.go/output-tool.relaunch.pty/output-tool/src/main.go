@@ -65,6 +65,10 @@ var (
 	flagKeepCapture = flag.Bool("keep-capture", false, "Viewer: keep capture/meta files (skip auto-cleanup)")
 	flagTTLMinutes  = flag.Int("cleanup-ttl-minutes", defaultConfig.Cleanup.TTLMinutes, "Viewer: sweep temp orphans older than this many minutes on startup")
 
+	// Tmux
+	flagTmuxForce = flag.Bool("tmux", false, "Force tmux popup when launching viewer (overrides config)")
+	flagTmuxOff   = flag.Bool("no-tmux", false, "Disable tmux popup even if available (overrides config)")
+
 	// Help / utilities
 	flagUsage             = flag.Bool("usage", false, "Show usage")
 	flagPrintEffectiveCfg = flag.Bool("print-effective-config", false, "Print merged config (defaults -> file -> CLI) as TOML and exit")
@@ -203,6 +207,9 @@ func configFromCurrentFlags(args0 string) *config.Config {
 	cfg.Editor.ArgPrefix = *flagEditorPrefx
 	// Launcher
 	cfg.Launcher.Prefix = *flagLauncher
+	// Only persist tmux defaults if user cares; otherwise keep defaults.
+	cfg.Launcher.TmuxPrefix = cfg.Launcher.TmuxPrefix // keep default unless you add a flag later
+	cfg.Launcher.PreferTmux = true                    // default; you can add a flag later to persist false
 	// Behavior
 	cfg.Behavior.OnlyViewMatches = *flagOnlyView
 	cfg.Behavior.OnlyOnMatches = *flagOnlyOnMatch
@@ -387,12 +394,16 @@ func runPipe(rs []rules.Rule) {
 	self, _ := os.Executable()
 	lcfg := launcher.Config{
 		LauncherPrefix: *flagLauncher,
+		TmuxPrefix:     defaultConfig.Launcher.TmuxPrefix,
+		PreferTmux:     defaultConfig.Launcher.PreferTmux,
 		ViewerTitle:    *flagViewerTitle,
 		OnlyView:       *flagOnlyView,
 		Mouse:          *flagMouse,
 		KeepCapture:    *flagKeepCapture,
 		CleanupTTLMin:  *flagTTLMinutes,
 		DryRun:         *flagDryLaunch,
+		ForceTmux:      *flagTmuxForce,
+		NoTmux:         *flagTmuxOff,
 	}
 	if err := launcher.SpawnTerminalViewer(lcfg, self, wr.Path(), metaPath); err != nil {
 		fatalf("launch viewer: %v", err)

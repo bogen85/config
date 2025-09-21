@@ -52,11 +52,11 @@ all: build
 build:
 	$_
 	: @ mkdir -p $(BIN)
-	: @ cd $(SRC) && : $(GO) build -o $(BIN)/$(APP) ./
+	: @ $(GO) build -o $(BIN)/$(APP) $(SRC)/*.go
 
 fmt:
 	$_
-	: @ cd $(SRC) && for go in $$(find . -name '*.go'); do : @ $(GO) fmt $${go}; done
+	for go in $$(find $(SRC) -name '*.go'); do : @ $(GO) fmt $${go}; done
 
 clean:
 	$_
