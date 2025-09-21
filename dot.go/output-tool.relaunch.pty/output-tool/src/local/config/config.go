@@ -78,7 +78,7 @@ func Default(bexe string) *Config {
 			GutterWidth: 6,
 			TopBar:      true,
 			BottomBar:   true,
-			Mouse:       false,
+			Mouse:       true,
 			NoAlt:       false,
 		},
 		Editor: Editor{

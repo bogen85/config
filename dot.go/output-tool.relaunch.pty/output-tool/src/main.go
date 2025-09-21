@@ -28,7 +28,7 @@ var (
 	defaultConfig = config.Default(baseExe(os.Args[0]))
 	// Config
 	flagConfigPath  = flag.String("config", "", "Path to config TOML (use /default to resolve to XDG path)")
-	flagNewConfig   = flag.Bool("output-new-config", false, "Write a new config TOML and exit (flags override defaults)")
+	flagNewConfig   = flag.Bool("write-new-config", false, "Write a new config TOML and exit (flags override defaults)")
 	flagForceConfig = flag.Bool("force", false, "Allow overwriting config when writing a new one")
 
 	// Modes
@@ -36,8 +36,8 @@ var (
 	flagFile = flag.String("file", "", "Read from file PATH and view inline")
 
 	// Pipe behavior
-	flagOnlyView    = flag.Bool("only-view-matches", false, "Viewer shows only matching lines (capture filtered in pipe)")
-	flagOnlyOnMatch = flag.Bool("only-on-matches", false, "Do not launch viewer when no matches were seen")
+	flagOnlyView    = flag.Bool("only-view-matches", defaultConfig.Behavior.OnlyViewMatches, "Viewer shows only matching lines (capture filtered in pipe)")
+	flagOnlyOnMatch = flag.Bool("only-on-matches", defaultConfig.Behavior.OnlyOnMatches, "Do not launch viewer when no matches were seen")
 	flagMatchStderr = flag.String("match-stderr", "line", "During --pipe, echo matches to stderr: none|line")
 
 	// Viewer internal
@@ -48,10 +48,10 @@ var (
 	// Viewer options
 	flagViewerTitle = flag.String("viewer-title", "OutputTool Viewer", "Viewer window title")
 	flagGutterWidth = flag.Int("gutter-width", defaultConfig.Viewer.GutterWidth, "Fixed gutter width for line numbers")
-	flagTopBar      = flag.Bool("top-bar", true, "Show top status bar")
-	flagBottomBar   = flag.Bool("bottom-bar", true, "Show bottom status bar")
-	flagNoAlt       = flag.Bool("no-alt", false, "Do not use terminal alt screen (debug)")
-	flagMouse       = flag.Bool("mouse", false, "Enable mouse tracking (disables terminal text selection)")
+	flagTopBar      = flag.Bool("top-bar", defaultConfig.Viewer.TopBar, "Show top status bar")
+	flagBottomBar   = flag.Bool("bottom-bar", defaultConfig.Viewer.BottomBar, "Show bottom status bar")
+	flagNoAlt       = flag.Bool("no-alt", defaultConfig.Viewer.NoAlt, "Do not use terminal alt screen (debug)")
+	flagMouse       = flag.Bool("mouse", defaultConfig.Viewer.Mouse, "Enable mouse tracking (disables terminal text selection)")
 
 	// Editor
 	flagEditorExe   = flag.String("editor", "cudatext", "Editor executable")
@@ -62,7 +62,7 @@ var (
 	flagDryLaunch = flag.Bool("dry-launch", false, "Pipe-mode: print the launch command and do not spawn")
 
 	// Cleanup behavior
-	flagKeepCapture = flag.Bool("keep-capture", false, "Viewer: keep capture/meta files (skip auto-cleanup)")
+	flagKeepCapture = flag.Bool("keep-capture", defaultConfig.Cleanup.KeepCapture, "Viewer: keep capture/meta files (skip auto-cleanup)")
 	flagTTLMinutes  = flag.Int("cleanup-ttl-minutes", defaultConfig.Cleanup.TTLMinutes, "Viewer: sweep temp orphans older than this many minutes on startup")
 
 	// Tmux
