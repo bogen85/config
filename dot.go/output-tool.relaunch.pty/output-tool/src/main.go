@@ -72,6 +72,8 @@ var (
 	// Help / utilities
 	flagUsage             = flag.Bool("usage", false, "Show usage")
 	flagPrintEffectiveCfg = flag.Bool("print-effective-config", false, "Print merged config (defaults -> file -> CLI) as TOML and exit")
+	flagWhichConfig       = flag.Bool("which-config", false, "Print the resolved config path and origin, then exit")
+	flagDebugLaunch       = flag.Bool("debug-launch", false, "Print tmux/launch decision inputs (implies --dry-launch)")
 )
 
 func usage() {
@@ -100,7 +102,12 @@ func main() {
 	}
 
 	// --- Resolve config path
-	cfgPath, isDefault := config.Resolve(*flagConfigPath, os.Args[0])
+	cfgPath, isDefault, cfgOrigin := config.Resolve(*flagConfigPath, os.Args[0])
+
+	if *flagWhichConfig {
+		fmt.Printf("config: path=%s origin=%s\n", config.CleanPath(cfgPath), cfgOrigin)
+		return
+	}
 
 	// --- Write new config and exit?
 	if *flagNewConfig {
@@ -126,7 +133,7 @@ func main() {
 	// --- Load config (if present), apply to flags not set explicitly
 	cfg, err := config.Load(cfgPath)
 	if err == nil {
-		fmt.Printf("config: loaded %s\n", config.CleanPath(cfgPath))
+		fmt.Printf("config: loaded %s (origin=%s)\n", config.CleanPath(cfgPath), cfgOrigin)
 	} else {
 		// If path is /default and not found, that's fine; we proceed with compiled defaults.
 		// Only print a note if user explicitly pointed at a path that doesn't exist.
@@ -139,9 +146,18 @@ func main() {
 	// Apply config values to flags not set on CLI (works for both: loaded or default)
 	applyConfigToFlagsIfNotSet(cfg)
 
-	// If requested, print the effective config (defaults -> file -> CLI) and exit
 	if *flagPrintEffectiveCfg {
-		eff := configFromCurrentFlags(os.Args[0]) // now reflects CLI (and any config fields not overridden)
+		// Comment header with path/origin + names of CLI-overridden flags
+		overridden := []string{}
+		flag.Visit(func(f *flag.Flag) { overridden = append(overridden, f.Name) })
+		fmt.Printf("# effective config (merged: defaults -> %s -> CLI)\n", config.CleanPath(cfgPath))
+		fmt.Printf("# origin: %s\n", cfgOrigin)
+		if len(overridden) > 0 {
+			fmt.Printf("# overridden flags: %s\n", strings.Join(overridden, ", "))
+		} else {
+			fmt.Printf("# overridden flags: (none)\n")
+		}
+		eff := configFromCurrentFlags(os.Args[0])
 		enc := toml.NewEncoder(os.Stdout)
 		if err := enc.Encode(eff); err != nil {
 			fmt.Fprintf(os.Stderr, "print-effective-config: %v\n", err)

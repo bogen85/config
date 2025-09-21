@@ -125,20 +125,26 @@ func defaultConfigDir() string {
 	)
 }
 
-// Resolve returns the path to use given:
-//   - cliConfig: "" (not provided) | "/default" | explicit path
-//   - args0: for bexename
-//
-// It also returns a boolean "isDefaultToken" indicating if "/default" was used.
-func Resolve(cliConfig, args0 string) (path string, isDefaultToken bool) {
+type Origin string
+
+const (
+	OriginExplicit      Origin = "explicit"
+	OriginDefaultToken  Origin = "default-token"
+	OriginProjectLocalA Origin = "project-local-a"
+	OriginProjectLocalB Origin = "project-local-b"
+	OriginXDGDefault    Origin = "xdg-default"
+)
+
+// Resolve returns the chosen path, whether /default token was used, and an origin tag.
+func Resolve(cliConfig, args0 string) (path string, isDefaultToken bool, origin Origin) {
 	bexe := baseExeName(args0)
 	defPath := filepath.Join(defaultConfigDir(), fmt.Sprintf("%s-config.toml", bexe))
 
 	if cliConfig != "" {
 		if cliConfig == "/default" {
-			return defPath, true
+			return defPath, true, OriginDefaultToken
 		}
-		return cliConfig, false
+		return cliConfig, false, OriginExplicit
 	}
 
 	// Not specified: lookup order
@@ -146,16 +152,16 @@ func Resolve(cliConfig, args0 string) (path string, isDefaultToken bool) {
 	if bexe == "output-tool" {
 		a := "./output-tool-config.toml"
 		if _, err := os.Stat(a); err == nil {
-			return a, false
+			return a, false, OriginProjectLocalA
 		}
 	}
 	// (b) ./output-tool-<bexename>-config.toml
 	b := fmt.Sprintf("./output-tool-%s-config.toml", bexe)
 	if _, err := os.Stat(b); err == nil {
-		return b, false
+		return b, false, OriginProjectLocalB
 	}
 	// (c) XDG config dir / <bexename>-config.toml (default)
-	return defPath, false
+	return defPath, false, OriginXDGDefault
 }
 
 // EnsureDir ensures parent dir for path exists.
