@@ -18,9 +18,9 @@ define build_defs
 		if [ "@" == "$$1" ]; then
 			shift
 		else
-			echo '++' $$@
+			echo '++' "$$@"
 		fi
-		$$@ 2>&1
+		"$$@"
 	}
 endef
 
@@ -53,6 +53,10 @@ build:
 	$_
 	: @ mkdir -p $(BIN)
 	: @ $(GO) build -o $(BIN)/$(APP) -v $(SRC)/*.go
+
+install: build
+	$_
+	: cp -vf $(BIN)/$(APP) $(HOME)/bin/ot
 
 fmt:
 	$_
