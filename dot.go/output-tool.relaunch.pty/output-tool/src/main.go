@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BurntSushi/toml"
+
 	"local/capture"
 	"local/cleanup"
 	"local/config"
@@ -62,8 +64,9 @@ var (
 	flagKeepCapture = flag.Bool("keep-capture", false, "Viewer: keep capture/meta files (skip auto-cleanup)")
 	flagTTLMinutes  = flag.Int("cleanup-ttl-minutes", 90, "Viewer: sweep temp orphans older than this many minutes on startup")
 
-	// Help
-	flagUsage = flag.Bool("usage", false, "Show usage")
+	// Help / utilities
+	flagUsage             = flag.Bool("usage", false, "Show usage")
+	flagPrintEffectiveCfg = flag.Bool("print-effective-config", false, "Print merged config (defaults -> file -> CLI) as TOML and exit")
 )
 
 func usage() {
@@ -119,7 +122,6 @@ func main() {
 	cfg, err := config.Load(cfgPath)
 	if err == nil {
 		fmt.Printf("config: loaded %s\n", config.CleanPath(cfgPath))
-		applyConfigToFlagsIfNotSet(cfg)
 	} else {
 		// If path is /default and not found, that's fine; we proceed with compiled defaults.
 		// Only print a note if user explicitly pointed at a path that doesn't exist.
@@ -127,6 +129,20 @@ func main() {
 			fmt.Printf("config: not found %s (using compiled defaults)\n", config.CleanPath(cfgPath))
 		}
 		cfg = config.Default(baseExe(os.Args[0])) // fallback for rules
+	}
+
+	// Apply config values to flags not set on CLI (works for both: loaded or default)
+	applyConfigToFlagsIfNotSet(cfg)
+
+	// If requested, print the effective config (defaults -> file -> CLI) and exit
+	if *flagPrintEffectiveCfg {
+		eff := configFromCurrentFlags(os.Args[0]) // now reflects CLI (and any config fields not overridden)
+		enc := toml.NewEncoder(os.Stdout)
+		if err := enc.Encode(eff); err != nil {
+			fmt.Fprintf(os.Stderr, "print-effective-config: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	// --- Viewer internal mode
