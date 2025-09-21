@@ -87,7 +87,7 @@ func Default(bexe string) *Config {
 		},
 		Launcher: Launcher{
 			Prefix:     "xfce4-terminal --hide-menubar --hide-scrollbar --hide-toolbar --title='OutputTool' --command",
-			TmuxPrefix: "tmux display-popup -E -w 100% -h 100% --",
+			TmuxPrefix: "tmux new-window --",
 			PreferTmux: true,
 		},
 		Behavior: Behavior{
