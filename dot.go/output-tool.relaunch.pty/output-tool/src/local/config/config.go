@@ -60,7 +60,7 @@ type Config struct {
 
 // ---------- Defaults ----------
 
-func Default(bexe string) *Config {
+func Default() *Config {
 	return &Config{
 		Rules: []Rule{
 			{

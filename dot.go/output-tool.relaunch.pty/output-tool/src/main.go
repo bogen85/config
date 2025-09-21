@@ -25,6 +25,7 @@ import (
 )
 
 var (
+	defaultConfig = config.Default()
 	// Config
 	flagConfigPath  = flag.String("config", "", "Path to config TOML (use /default to resolve to XDG path)")
 	flagNewConfig   = flag.Bool("output-new-config", false, "Write a new config TOML and exit (flags override defaults)")
@@ -46,7 +47,7 @@ var (
 
 	// Viewer options
 	flagViewerTitle = flag.String("viewer-title", "OutputTool Viewer", "Viewer window title")
-	flagGutterWidth = flag.Int("gutter-width", 6, "Fixed gutter width for line numbers")
+	flagGutterWidth = flag.Int("gutter-width", defaultConfig.Viewer.GutterWidth, "Fixed gutter width for line numbers")
 	flagTopBar      = flag.Bool("top-bar", true, "Show top status bar")
 	flagBottomBar   = flag.Bool("bottom-bar", true, "Show bottom status bar")
 	flagNoAlt       = flag.Bool("no-alt", false, "Do not use terminal alt screen (debug)")
@@ -62,7 +63,7 @@ var (
 
 	// Cleanup behavior
 	flagKeepCapture = flag.Bool("keep-capture", false, "Viewer: keep capture/meta files (skip auto-cleanup)")
-	flagTTLMinutes  = flag.Int("cleanup-ttl-minutes", 90, "Viewer: sweep temp orphans older than this many minutes on startup")
+	flagTTLMinutes  = flag.Int("cleanup-ttl-minutes", defaultConfig.Cleanup.TTLMinutes, "Viewer: sweep temp orphans older than this many minutes on startup")
 
 	// Help / utilities
 	flagUsage             = flag.Bool("usage", false, "Show usage")
@@ -128,7 +129,7 @@ func main() {
 		if *flagConfigPath != "" && !isDefault {
 			fmt.Printf("config: not found %s (using compiled defaults)\n", config.CleanPath(cfgPath))
 		}
-		cfg = config.Default(baseExe(os.Args[0])) // fallback for rules
+		cfg = defaultConfig // fallback for rules
 	}
 
 	// Apply config values to flags not set on CLI (works for both: loaded or default)
@@ -189,7 +190,7 @@ func filepathBase(p string) string {
 }
 
 func configFromCurrentFlags(args0 string) *config.Config {
-	cfg := config.Default(baseExe(args0))
+	cfg := defaultConfig
 	// Viewer
 	cfg.Viewer.Title = *flagViewerTitle
 	cfg.Viewer.GutterWidth = *flagGutterWidth
