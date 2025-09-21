@@ -343,7 +343,11 @@ func runExec(rs []rules.Rule, cfg *config.Config, cmdArgs []string) {
 	if *flagOnlyOnMatch && !res.AnyMatch {
 		_ = os.Remove(res.CapturePath)
 		_ = os.Remove(res.CapturePath + ".meta.json") // in case future changes wrote meta separately
-		return
+		// Propagate child exit code
+		if res.ExitCode != 0 {
+			os.Exit(res.ExitCode)
+		}
+		return // zero code
 	}
 
 	// viewer inline (no relaunch)

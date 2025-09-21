@@ -8,9 +8,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"local/capture"
@@ -29,6 +31,7 @@ type Result struct {
 	LinesTotal   int
 	MatchLines   int
 	MatchesTotal int
+	ExitCode     int
 }
 
 // Run runs cmdArgs[0] with cmdArgs[1:] and captures both stdout and stderr.
@@ -43,6 +46,7 @@ func Run(cmdArgs []string, rs []rules.Rule, opts Options) (*Result, error) {
 		return nil, errors.New("execcap: empty cmd")
 	}
 	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -64,6 +68,26 @@ func Run(cmdArgs []string, rs []rules.Rule, opts Options) (*Result, error) {
 		_ = wr.Close()
 		return nil, fmt.Errorf("execcap: start: %w", err)
 	}
+
+	// --- Signal forwarding: forward INT/TERM/HUP/QUIT to child *process group*
+	sigc := make(chan os.Signal, 4)
+	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
+	defer signal.Stop(sigc)
+	defer close(sigc)
+
+	// Guarded relay: in case cmd.Process is (very rarely) nil or replaced
+	go func(p *os.Process) {
+		if p == nil {
+			// Nothing to forward to; drain signals so we don't leak the goroutine.
+			for range sigc {
+			}
+			return
+		}
+		pgid := -p.Pid // negative => deliver to the child's process group
+		for sig := range sigc {
+			_ = syscall.Kill(pgid, sig.(syscall.Signal))
+		}
+	}(cmd.Process)
 
 	var (
 		linesTotal   int64
@@ -153,7 +177,16 @@ func Run(cmdArgs []string, rs []rules.Rule, opts Options) (*Result, error) {
 
 	wg.Wait()
 	_ = wr.Close()
-	_ = cmd.Wait()
+	waitErr := cmd.Wait()
+	exitCode := 0
+	if waitErr != nil {
+		if ee, ok := waitErr.(*exec.ExitError); ok {
+			exitCode = ee.ExitCode()
+		} else {
+			// unknown wait error → use 1 but still return capture
+			exitCode = 1
+		}
+	}
 
 	res := &Result{
 		CapturePath:  wr.Path(),
@@ -161,6 +194,7 @@ func Run(cmdArgs []string, rs []rules.Rule, opts Options) (*Result, error) {
 		LinesTotal:   int(linesTotal),
 		MatchLines:   int(matchLines),
 		MatchesTotal: int(matchesTotal),
+		ExitCode:     exitCode,
 		Meta: capture.Meta{
 			Version:        1,
 			CapturePath:    wr.Path(),
