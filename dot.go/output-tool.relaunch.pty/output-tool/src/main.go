@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	defaultConfig = config.Default()
+	defaultConfig = config.Default(baseExe(os.Args[0]))
 	// Config
 	flagConfigPath  = flag.String("config", "", "Path to config TOML (use /default to resolve to XDG path)")
 	flagNewConfig   = flag.Bool("output-new-config", false, "Write a new config TOML and exit (flags override defaults)")
@@ -173,7 +173,7 @@ func main() {
 	rs := compileRules(cfg)
 
 	if *flagPipe {
-		runPipe(rs)
+		runPipe(rs, cfg)
 		return
 	}
 	if *flagFile != "" {
@@ -207,9 +207,7 @@ func configFromCurrentFlags(args0 string) *config.Config {
 	cfg.Editor.ArgPrefix = *flagEditorPrefx
 	// Launcher
 	cfg.Launcher.Prefix = *flagLauncher
-	// Only persist tmux defaults if user cares; otherwise keep defaults.
-	cfg.Launcher.TmuxPrefix = cfg.Launcher.TmuxPrefix // keep default unless you add a flag later
-	cfg.Launcher.PreferTmux = true                    // default; you can add a flag later to persist false
+
 	// Behavior
 	cfg.Behavior.OnlyViewMatches = *flagOnlyView
 	cfg.Behavior.OnlyOnMatches = *flagOnlyOnMatch
@@ -301,7 +299,7 @@ func compileRules(cfg *config.Config) []rules.Rule {
 
 // ---------- Pipe / File / Viewer implementations ----------
 
-func runPipe(rs []rules.Rule) {
+func runPipe(rs []rules.Rule, cfg *config.Config) {
 	// Create temp writer
 	wr, err := capture.NewTempWriter("ot-")
 	if err != nil {
@@ -394,8 +392,8 @@ func runPipe(rs []rules.Rule) {
 	self, _ := os.Executable()
 	lcfg := launcher.Config{
 		LauncherPrefix: *flagLauncher,
-		TmuxPrefix:     defaultConfig.Launcher.TmuxPrefix,
-		PreferTmux:     defaultConfig.Launcher.PreferTmux,
+		TmuxPrefix:     cfg.Launcher.TmuxPrefix,
+		PreferTmux:     cfg.Launcher.PreferTmux,
 		ViewerTitle:    *flagViewerTitle,
 		OnlyView:       *flagOnlyView,
 		Mouse:          *flagMouse,

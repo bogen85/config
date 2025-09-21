@@ -62,7 +62,7 @@ type Config struct {
 
 // ---------- Defaults ----------
 
-func Default() *Config {
+func Default(bexe string) *Config {
 	return &Config{
 		Rules: []Rule{
 			{
@@ -74,7 +74,7 @@ func Default() *Config {
 			},
 		},
 		Viewer: Viewer{
-			Title:       "OutputTool Viewer",
+			Title:       fmt.Sprintf("%s Viewer", bexe),
 			GutterWidth: 6,
 			TopBar:      true,
 			BottomBar:   true,
