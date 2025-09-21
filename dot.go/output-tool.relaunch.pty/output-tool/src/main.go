@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"local/capture"
 	"local/cleanup"
+	"local/config"
 	"local/editor"
 	"local/launcher"
 	"local/rules"
@@ -21,6 +23,11 @@ import (
 )
 
 var (
+	// Config
+	flagConfigPath  = flag.String("config", "", "Path to config TOML (use /default to resolve to XDG path)")
+	flagNewConfig   = flag.Bool("output-new-config", false, "Write a new config TOML and exit (flags override defaults)")
+	flagForceConfig = flag.Bool("force", false, "Allow overwriting config when writing a new one")
+
 	// Modes
 	flagPipe = flag.Bool("pipe", false, "Read from stdin; stream to stdout, capture JSONL, and (optionally) launch viewer in a new terminal")
 	flagFile = flag.String("file", "", "Read from file PATH and view inline")
@@ -61,9 +68,14 @@ var (
 
 func usage() {
 	fmt.Fprintf(os.Stdout, `Usage:
-  ot --pipe [--only-view-matches] [--only-on-matches] [--match-stderr=none|line] [--launcher="..."] [--mouse]
-  ot --file=PATH [--only-view-matches] [--mouse]
-  ot --view --capture=/tmp/ot-XXXX.jsonl --meta=/tmp/ot-XXXX.meta.json   (internal)
+  output-tool --pipe [--only-view-matches] [--only-on-matches] [--match-stderr=none|line] [--launcher="..."] [--mouse]
+  output-tool --file=PATH [--only-view-matches] [--mouse]
+  output-tool --view --capture=/tmp/ot-XXXX.jsonl --meta=/tmp/ot-XXXX.meta.json   (internal)
+
+Config:
+  --config=/default     Use ${XDG_CONFIG_HOME:-~/.config}/user-dev-tooling/output-tool/<bexename>-config.toml
+  --output-new-config   Write a new config TOML and exit (respects --config and --force)
+  --force               Overwrite config if it exists (when writing)
 
 Notes:
   - Pipe mode acts like 'cat': streams stdin to stdout in real time, scans matches, writes JSONL capture and meta.
@@ -79,9 +91,47 @@ func main() {
 		return
 	}
 
-	// viewer internal
+	// --- Resolve config path
+	cfgPath, isDefault := config.Resolve(*flagConfigPath, os.Args[0])
+
+	// --- Write new config and exit?
+	if *flagNewConfig {
+		cfg := configFromCurrentFlags(os.Args[0]) // defaults + CLI overrides
+		st, err := config.Save(cfgPath, cfg, *flagForceConfig)
+		switch st {
+		case config.WroteNew:
+			fmt.Printf("config: written %s\n", config.CleanPath(cfgPath))
+		case config.WroteOverwritten:
+			fmt.Printf("config: overwritten %s (forced)\n", config.CleanPath(cfgPath))
+		case config.NotWrittenExists:
+			fmt.Printf("config: not written (exists) %s\n", config.CleanPath(cfgPath))
+		case config.NotWrittenCanceled:
+			fmt.Printf("config: not written (canceled) %s\n", config.CleanPath(cfgPath))
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "config: error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// --- Load config (if present), apply to flags not set explicitly
+	cfg, err := config.Load(cfgPath)
+	if err == nil {
+		fmt.Printf("config: loaded %s\n", config.CleanPath(cfgPath))
+		applyConfigToFlagsIfNotSet(cfg)
+	} else {
+		// If path is /default and not found, that's fine; we proceed with compiled defaults.
+		// Only print a note if user explicitly pointed at a path that doesn't exist.
+		if *flagConfigPath != "" && !isDefault {
+			fmt.Printf("config: not found %s (using compiled defaults)\n", config.CleanPath(cfgPath))
+		}
+		cfg = config.Default(baseExe(os.Args[0])) // fallback for rules
+	}
+
+	// --- Viewer internal mode
 	if *flagView {
-		runViewerWithCleanup(*flagCapturePath, *flagMetaPath)
+		runViewerWithCleanup(*flagCapturePath, *flagMetaPath, cfg)
 		return
 	}
 
@@ -98,7 +148,8 @@ func main() {
 		os.Exit(2)
 	}
 
-	rs := rules.Default()
+	// compile rules from cfg
+	rs := compileRules(cfg)
 
 	if *flagPipe {
 		runPipe(rs)
@@ -109,6 +160,112 @@ func main() {
 		return
 	}
 }
+
+// ---------- Config <-> Flags glue ----------
+
+func baseExe(args0 string) string { return filepathBase(args0) }
+func filepathBase(p string) string {
+	i := strings.LastIndexByte(p, '/')
+	if i < 0 {
+		return p
+	}
+	return p[i+1:]
+}
+
+func configFromCurrentFlags(args0 string) *config.Config {
+	cfg := config.Default(baseExe(args0))
+	// Viewer
+	cfg.Viewer.Title = *flagViewerTitle
+	cfg.Viewer.GutterWidth = *flagGutterWidth
+	cfg.Viewer.TopBar = *flagTopBar
+	cfg.Viewer.BottomBar = *flagBottomBar
+	cfg.Viewer.Mouse = *flagMouse
+	cfg.Viewer.NoAlt = *flagNoAlt
+	// Editor
+	cfg.Editor.Exe = *flagEditorExe
+	cfg.Editor.ArgPrefix = *flagEditorPrefx
+	// Launcher
+	cfg.Launcher.Prefix = *flagLauncher
+	// Behavior
+	cfg.Behavior.OnlyViewMatches = *flagOnlyView
+	cfg.Behavior.OnlyOnMatches = *flagOnlyOnMatch
+	cfg.Behavior.MatchStderr = *flagMatchStderr
+	return cfg
+}
+
+func applyConfigToFlagsIfNotSet(cfg *config.Config) {
+	set := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	// Viewer
+	if !set["viewer-title"] {
+		*flagViewerTitle = cfg.Viewer.Title
+	}
+	if !set["gutter-width"] && cfg.Viewer.GutterWidth > 0 {
+		*flagGutterWidth = cfg.Viewer.GutterWidth
+	}
+	if !set["top-bar"] {
+		*flagTopBar = cfg.Viewer.TopBar
+	}
+	if !set["bottom-bar"] {
+		*flagBottomBar = cfg.Viewer.BottomBar
+	}
+	if !set["mouse"] {
+		*flagMouse = cfg.Viewer.Mouse
+	}
+	if !set["no-alt"] {
+		*flagNoAlt = cfg.Viewer.NoAlt
+	}
+	// Editor
+	if !set["editor"] && cfg.Editor.Exe != "" {
+		*flagEditorExe = cfg.Editor.Exe
+	}
+	if !set["editor-arg-prefix"] {
+		*flagEditorPrefx = cfg.Editor.ArgPrefix
+	}
+	// Launcher
+	if !set["launcher"] && cfg.Launcher.Prefix != "" {
+		*flagLauncher = cfg.Launcher.Prefix
+	}
+	// Behavior
+	if !set["only-view-matches"] {
+		*flagOnlyView = cfg.Behavior.OnlyViewMatches
+	}
+	if !set["only-on-matches"] {
+		*flagOnlyOnMatch = cfg.Behavior.OnlyOnMatches
+	}
+	if !set["match-stderr"] && cfg.Behavior.MatchStderr != "" {
+		*flagMatchStderr = cfg.Behavior.MatchStderr
+	}
+}
+
+// compileRules builds []rules.Rule from cfg.Rules
+func compileRules(cfg *config.Config) []rules.Rule {
+	if cfg == nil || len(cfg.Rules) == 0 {
+		return rules.Default()
+	}
+	out := make([]rules.Rule, 0, len(cfg.Rules))
+	for _, r := range cfg.Rules {
+		re, err := regexp.Compile(r.Regex)
+		if err != nil {
+			// invalid regex → skip
+			continue
+		}
+		out = append(out, rules.Rule{
+			ID:          r.ID,
+			Regex:       re,
+			FileGroup:   r.FileGroup,
+			LineGroup:   r.LineGroup,
+			ColumnGroup: r.ColumnGroup,
+		})
+	}
+	if len(out) == 0 {
+		return rules.Default()
+	}
+	return out
+}
+
+// ---------- Pipe / File / Viewer implementations ----------
 
 func runPipe(rs []rules.Rule) {
 	// Create temp writer
@@ -284,7 +441,7 @@ func runFile(rs []rules.Rule, path string) {
 	}
 }
 
-func runViewerWithCleanup(capturePath, metaPath string) {
+func runViewerWithCleanup(capturePath, metaPath string, _ *config.Config) {
 	// load meta if present
 	var meta capture.Meta
 	if metaPath != "" {
@@ -295,6 +452,7 @@ func runViewerWithCleanup(capturePath, metaPath string) {
 	// sweep orphans
 	cleanup.SweepOrphans(*flagTTLMinutes)
 
+	// rules from compiled defaults (config already applied above to flags; rules for viewer can be default)
 	rs := rules.Default()
 	vopts := viewer.Options{
 		Title:         *flagViewerTitle,
