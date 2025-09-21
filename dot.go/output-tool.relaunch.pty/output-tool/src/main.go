@@ -190,6 +190,9 @@ func configFromCurrentFlags(args0 string) *config.Config {
 	cfg.Behavior.OnlyViewMatches = *flagOnlyView
 	cfg.Behavior.OnlyOnMatches = *flagOnlyOnMatch
 	cfg.Behavior.MatchStderr = *flagMatchStderr
+	// Cleanup
+	cfg.Cleanup.KeepCapture = *flagKeepCapture
+	cfg.Cleanup.TTLMinutes = *flagTTLMinutes
 	return cfg
 }
 
@@ -236,6 +239,13 @@ func applyConfigToFlagsIfNotSet(cfg *config.Config) {
 	}
 	if !set["match-stderr"] && cfg.Behavior.MatchStderr != "" {
 		*flagMatchStderr = cfg.Behavior.MatchStderr
+	}
+	// Cleanup
+	if !set["keep-capture"] {
+		*flagKeepCapture = cfg.Cleanup.KeepCapture
+	}
+	if !set["cleanup-ttl-minutes"] && cfg.Cleanup.TTLMinutes > 0 {
+		*flagTTLMinutes = cfg.Cleanup.TTLMinutes
 	}
 }
 

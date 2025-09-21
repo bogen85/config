@@ -44,12 +44,18 @@ type Behavior struct {
 	MatchStderr     string `toml:"match_stderr"` // none|line
 }
 
+type Cleanup struct {
+	KeepCapture bool `toml:"keep_capture"`
+	TTLMinutes  int  `toml:"ttl_minutes"`
+}
+
 type Config struct {
 	Rules    []Rule   `toml:"rules"`
 	Viewer   Viewer   `toml:"viewer"`
 	Editor   Editor   `toml:"editor"`
 	Launcher Launcher `toml:"launcher"`
 	Behavior Behavior `toml:"behavior"`
+	Cleanup  Cleanup  `toml:"cleanup"`
 }
 
 // ---------- Defaults ----------
@@ -85,6 +91,10 @@ func Default(bexe string) *Config {
 			OnlyViewMatches: false,
 			OnlyOnMatches:   false,
 			MatchStderr:     "line",
+		},
+		Cleanup: Cleanup{
+			KeepCapture: false,
+			TTLMinutes:  5,
 		},
 	}
 }
