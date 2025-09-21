@@ -1,6 +1,7 @@
 // output-tool.go
-// JSONL capture + meta for pipe/file, and a clean tcell viewer with match-span highlighting
-// and mouse-driven editing (double-click).
+// JSONL capture + meta for pipe/file, a clean tcell viewer with match-span highlighting,
+// mouse support (toggle), editor launch on Enter/double-click, and default auto-cleanup
+// of temp artifacts (with --keep-capture to opt out).
 //
 // Build: go build -o output-tool output-tool.go
 
@@ -17,11 +18,12 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -42,6 +44,7 @@ type Meta struct {
 		Mode string `json:"mode"` // pipe|file
 		Arg  string `json:"arg"`
 	} `json:"source"`
+
 	CapturePath    string   `json:"capture_path"`
 	Filtered       bool     `json:"filtered"` // true if only-view-matches applied upstream
 	LineFormat     string   `json:"line_format"`
@@ -50,6 +53,10 @@ type Meta struct {
 	MatchesTotal   int      `json:"matches_total"`
 	Rules          []string `json:"rules"`
 	CreatedUnixSec int64    `json:"created_unix"`
+
+	// Cleanup hints
+	Temp     bool `json:"temp"`      // true when created by pipe mode (temp artifact)
+	OwnerPID int  `json:"owner_pid"` // PID that produced the files
 }
 
 type Rec struct {
@@ -63,7 +70,7 @@ const (
 )
 
 var (
-	// CLI
+	// CLI: controller
 	flagPipe        = flag.Bool("pipe", false, "Read from stdin; stream to stdout, capture JSONL, and (optionally) launch viewer in new terminal")
 	flagFile        = flag.String("file", "", "Read from file PATH and view inline")
 	flagOnlyView    = flag.Bool("only-view-matches", false, "Viewer shows only matching lines (capture filtered in pipe)")
@@ -87,15 +94,20 @@ var (
 	// Editor
 	flagEditor         = flag.String("editor", "cudatext", "Editor executable")
 	flagEditorArgPrefx = flag.String("editor-arg-prefix", "", "Optional prefix arg placed before target file (e.g. '-n')")
-	// Debug
+
+	// Cleanup behavior
+	flagKeepCapture       = flag.Bool("keep-capture", false, "Viewer: keep capture/meta files (skip auto-cleanup)")
+	flagCleanupTTLMinutes = flag.Int("cleanup-ttl-minutes", 90, "Viewer: sweep temp orphans older than this many minutes on startup")
+
+	// Debug/help
 	flagHelpUsage      = flag.Bool("usage", false, "Show usage")
 	flagDryRunLauncher = flag.Bool("dry-launch", false, "Pipe-mode: print the launch command and do not spawn")
 )
 
 func usage() {
 	fmt.Fprintf(os.Stdout, `Usage:
-  output-tool --pipe [--only-view-matches] [--only-on-matches] [--match-stderr=none|line] [--launcher="..."]
-  output-tool --file=PATH [--only-view-matches]
+  output-tool --pipe [--only-view-matches] [--only-on-matches] [--match-stderr=none|line] [--launcher="..."] [--mouse]
+  output-tool --file=PATH [--only-view-matches] [--mouse]
   output-tool --view --capture=/tmp/ot-XXXX.jsonl --meta=/tmp/ot-XXXX.meta.json   (internal)
 
 Notes:
@@ -110,6 +122,9 @@ Viewer:
   - ↑/↓ PgUp/PgDn Home/End to navigate; q/Esc to quit.
   - Enter or double-click launches editor if line contains path:line[:col].
   - --mouse enables click/double-click; press 'M' in the viewer to toggle mouse mode.
+Cleanup:
+  - Pipe captures are temp by default and will be auto-removed on viewer exit (normal or SIGHUP/SIGTERM) unless --keep-capture is set.
+  - Viewer sweeps temp-dir orphans older than --cleanup-ttl-minutes on startup.
 `)
 }
 
@@ -125,11 +140,11 @@ func main() {
 		if *flagCapturePath == "" {
 			exitErr("missing --capture for --view")
 		}
-		runViewer(*flagCapturePath, *flagMetaPath)
+		runViewerWithCleanup(*flagCapturePath, *flagMetaPath)
 		return
 	}
 
-	// select exactly one of pipe|file (clipboard/primary omitted in this cut)
+	// select exactly one of pipe|file
 	modes := 0
 	if *flagPipe {
 		modes++
@@ -312,6 +327,8 @@ func runPipe(rules []Rule, onlyView, onlyOn bool, matchStderr, launcher string) 
 		MatchLines:     matchLines,
 		MatchesTotal:   matchesTotal,
 		CreatedUnixSec: time.Now().Unix(),
+		Temp:           true,
+		OwnerPID:       os.Getpid(),
 	}
 	meta.Source.Mode = "pipe"
 	meta.Source.Arg = ""
@@ -369,6 +386,13 @@ func spawnTerminalViewer(launcher, capture, meta string) error {
 	}
 	if *flagMouse {
 		inner.WriteString("--mouse ")
+	}
+	// default cleanup is ON; pass through any explicit keep-capture choice
+	if *flagKeepCapture {
+		inner.WriteString("--keep-capture ")
+	}
+	if *flagCleanupTTLMinutes != 90 {
+		inner.WriteString(fmt.Sprintf("--cleanup-ttl-minutes=%d ", *flagCleanupTTLMinutes))
 	}
 
 	// launcher is a prefix, e.g.:
@@ -465,11 +489,111 @@ func runFile(rules []Rule, path string, onlyView bool) {
 		exitErr("scan file: %v", err)
 	}
 
-	// Run viewer inline from buffer
+	// Run viewer inline from buffer (no cleanup for file mode)
 	runViewerFromReader(bytes.NewReader(buf.Bytes()), "")
 }
 
-// ---------- Viewer ----------
+// ---------- Viewer (with cleanup orchestration) ----------
+
+func runViewerWithCleanup(capturePath, metaPath string) {
+	// Sweep old orphans first (best-effort)
+	sweepOrphans(*flagCleanupTTLMinutes)
+
+	// Load meta (optional)
+	var meta Meta
+	if metaPath != "" {
+		if b, err := os.ReadFile(metaPath); err == nil {
+			_ = json.Unmarshal(b, &meta) // best-effort
+		}
+	}
+
+	// Trap signals so we can cleanup on SIGHUP/TERM/INT
+	sigc := make(chan os.Signal, 4)
+	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+
+	done := make(chan struct{})
+	var uiErr error
+
+	go func() {
+		uiErr = runViewerLoop(capturePath, metaPath)
+		close(done)
+	}()
+
+	select {
+	case <-sigc:
+		// a signal arrived; fall through to cleanup
+	case <-done:
+		// UI ended normally
+	}
+
+	// Cleanup (default ON) if temp artifact and under tempdir
+	if !*flagKeepCapture {
+		if shouldCleanup(meta, capturePath, metaPath) {
+			_ = os.Remove(capturePath)
+			if metaPath != "" {
+				_ = os.Remove(metaPath)
+			}
+		}
+	}
+
+	// if UI is still running (signal case), give it a moment to unwind
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+	}
+	_ = uiErr // currently unused; keep for future logging
+}
+
+func shouldCleanup(meta Meta, capturePath, metaPath string) bool {
+	if !meta.Temp {
+		return false
+	}
+	tmp := os.TempDir()
+	okCap := strings.HasPrefix(capturePath, tmp+string(os.PathSeparator))
+	okMeta := (metaPath == "") || strings.HasPrefix(metaPath, tmp+string(os.PathSeparator))
+	return okCap && okMeta
+}
+
+func sweepOrphans(ttlMinutes int) {
+	if ttlMinutes <= 0 {
+		return
+	}
+	dir := os.TempDir()
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-time.Duration(ttlMinutes) * time.Minute)
+	for _, e := range ents {
+		name := e.Name()
+		if !strings.HasPrefix(name, "ot-") || !strings.HasSuffix(name, ".meta.json") {
+			continue
+		}
+		metaPath := filepath.Join(dir, name)
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		b, err := os.ReadFile(metaPath)
+		if err != nil {
+			continue
+		}
+		var m Meta
+		if err := json.Unmarshal(b, &m); err != nil {
+			continue
+		}
+		if !m.Temp {
+			continue
+		}
+		// remove meta and capture (best-effort)
+		_ = os.Remove(metaPath)
+		if m.CapturePath != "" && strings.HasPrefix(m.CapturePath, dir+string(os.PathSeparator)) {
+			_ = os.Remove(m.CapturePath)
+		}
+	}
+}
+
+// ---------- Viewer core ----------
 
 type viewerRec struct {
 	N    int
@@ -477,17 +601,17 @@ type viewerRec struct {
 	M    bool
 }
 
-func runViewer(capturePath, metaPath string) {
+func runViewerLoop(capturePath, metaPath string) error {
 	// Load capture JSONL
 	f, err := os.Open(capturePath)
 	if err != nil {
-		exitErr("open capture: %v", err)
+		return fmt.Errorf("open capture: %w", err)
 	}
 	defer f.Close()
-	runViewerFromReader(f, metaPath)
+	return runViewerFromReader(f, metaPath)
 }
 
-func runViewerFromReader(r io.Reader, metaPath string) {
+func runViewerFromReader(r io.Reader, metaPath string) error {
 	var recs []viewerRec
 	dec := json.NewDecoder(r)
 	for {
@@ -496,7 +620,7 @@ func runViewerFromReader(r io.Reader, metaPath string) {
 			if errors.Is(err, io.EOF) {
 				break
 			}
-			exitErr("decode capture: %v", err)
+			return fmt.Errorf("decode capture: %w", err)
 		}
 		recs = append(recs, viewerRec{N: rec.N, Text: rec.Text, M: rec.M})
 	}
@@ -507,10 +631,10 @@ func runViewerFromReader(r io.Reader, metaPath string) {
 	// tcell screen
 	screen, err := tcell.NewScreen()
 	if err != nil {
-		exitErr("tcell screen: %v", err)
+		return fmt.Errorf("tcell screen: %w", err)
 	}
 	if err := screen.Init(); err != nil {
-		exitErr("tcell init: %v", err)
+		return fmt.Errorf("tcell init: %w", err)
 	}
 	defer screen.Fini()
 
@@ -610,7 +734,7 @@ func runViewerFromReader(r io.Reader, metaPath string) {
 
 			// content with span highlighting
 			spans := allMatchSpans(rules, rec.Text)
-			// build byte->rune index mapping
+			// byte->rune index mapping
 			byteToRuneIndex := make([]int, 0, len(rec.Text)+1)
 			runePos := 0
 			for i := 0; i < len(rec.Text); {
@@ -619,14 +743,13 @@ func runViewerFromReader(r io.Reader, metaPath string) {
 				i += size
 				runePos++
 			}
-			byteToRuneIndex = append(byteToRuneIndex, runePos) // sentinel
+			byteToRuneIndex = append(byteToRuneIndex, runePos)
 
-			// paint content char-by-char
 			maxw := w - gw
-			rx := gw
 			if maxw < 0 {
 				maxw = 0
 			}
+
 			// convert spans (byte) -> rune spans
 			runeSpans := make([][2]int, 0, len(spans))
 			for _, se := range spans {
@@ -639,6 +762,7 @@ func runViewerFromReader(r io.Reader, metaPath string) {
 			}
 
 			// iterate runes with an index
+			rx := gw
 			runeIdx := 0
 			for _, r := range rec.Text {
 				if rx >= w {
@@ -683,7 +807,6 @@ func runViewerFromReader(r io.Reader, metaPath string) {
 			if !*flagMouse {
 				break
 			}
-			//x,
 			_, y := e.Position()
 			btn := e.Buttons()
 			// map y to index
@@ -714,7 +837,7 @@ func runViewerFromReader(r io.Reader, metaPath string) {
 		case *tcell.EventKey:
 			switch e.Key() {
 			case tcell.KeyEsc:
-				return
+				return nil
 			case tcell.KeyEnter:
 				if cur >= 0 && cur < len(recs) {
 					launchEditorForLine(recs[cur].Text, rules)
@@ -722,7 +845,7 @@ func runViewerFromReader(r io.Reader, metaPath string) {
 			case tcell.KeyRune:
 				switch e.Rune() {
 				case 'q', 'Q':
-					return
+					return nil
 				case 'M', 'm':
 					*flagMouse = !*flagMouse
 					if *flagMouse {
@@ -861,10 +984,10 @@ func launchEditorForLine(line string, rules []Rule) {
 		}
 		var lineNum, colNum int
 		if s, ok := getGroup(r.LineGroup); ok {
-			lineNum, _ = strconv.Atoi(s)
+			lineNum, _ = strconvAtoiSafe(s)
 		}
 		if s, ok := getGroup(r.ColumnGroup); ok {
-			colNum, _ = strconv.Atoi(s)
+			colNum, _ = strconvAtoiSafe(s)
 		}
 
 		target := file
@@ -897,6 +1020,17 @@ func launchEditorForLine(line string, rules []Rule) {
 	}
 	args = append(args, tmp)
 	_ = exec.Command(*flagEditor, args...).Start()
+}
+
+func strconvAtoiSafe(s string) (int, error) {
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("not a number")
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n, nil
 }
 
 // ---------- Utils ----------
