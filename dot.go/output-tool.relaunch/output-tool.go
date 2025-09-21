@@ -1,5 +1,7 @@
 // output-tool.go
-// JSONL capture + meta for pipe/file, and a clean tcell viewer.
+// JSONL capture + meta for pipe/file, and a clean tcell viewer with match-span highlighting
+// and mouse-driven editing (double-click).
+//
 // Build: go build -o output-tool output-tool.go
 
 package main
@@ -18,15 +20,20 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
 )
 
 type Rule struct {
-	ID    string
-	Regex *regexp.Regexp
+	ID          string
+	Regex       *regexp.Regexp
+	FileGroup   int // 1-based capture group index for file path (0 = none)
+	LineGroup   int // 1-based capture group index for line number
+	ColumnGroup int // 1-based capture group index for column number
 }
 
 type Meta struct {
@@ -57,20 +64,30 @@ const (
 
 var (
 	// CLI
-	flagPipe           = flag.Bool("pipe", false, "Read from stdin; stream to stdout, capture JSONL, and (optionally) launch viewer in new terminal")
-	flagFile           = flag.String("file", "", "Read from file PATH and view inline")
-	flagOnlyView       = flag.Bool("only-view-matches", false, "Viewer shows only matching lines (capture filtered in pipe)")
-	flagOnlyOnMatch    = flag.Bool("only-on-matches", false, "Do not launch viewer when no matches were seen")
-	flagMatchStderr    = flag.String("match-stderr", "line", "During --pipe, echo matches to stderr: none|line")
-	flagLauncher       = flag.String("launcher", defaultLauncher, "Terminal launcher command prefix to spawn viewer (pipe mode). Example: 'xfce4-terminal -- ... --command'")
-	flagView           = flag.Bool("view", false, "Internal: run viewer on a capture JSONL file")
-	flagCapturePath    = flag.String("capture", "", "Internal: capture JSONL path for --view")
-	flagMetaPath       = flag.String("meta", "", "Internal: meta.json path for --view")
-	flagViewerTitle    = flag.String("viewer-title", "OutputTool Viewer", "Viewer window title (used by some terminals)")
-	flagGutterWidth    = flag.Int("gutter-width", 6, "Fixed gutter width for line numbers")
-	flagTopBar         = flag.Bool("top-bar", true, "Show top status bar")
-	flagBottomBar      = flag.Bool("bottom-bar", true, "Show bottom status bar")
-	flagNoAltScreen    = flag.Bool("no-alt", false, "Do not use terminal alt screen (debug)")
+	flagPipe        = flag.Bool("pipe", false, "Read from stdin; stream to stdout, capture JSONL, and (optionally) launch viewer in new terminal")
+	flagFile        = flag.String("file", "", "Read from file PATH and view inline")
+	flagOnlyView    = flag.Bool("only-view-matches", false, "Viewer shows only matching lines (capture filtered in pipe)")
+	flagOnlyOnMatch = flag.Bool("only-on-matches", false, "Do not launch viewer when no matches were seen")
+	flagMatchStderr = flag.String("match-stderr", "line", "During --pipe, echo matches to stderr: none|line")
+	flagLauncher    = flag.String("launcher", defaultLauncher, "Terminal launcher command prefix to spawn viewer (pipe mode). Example: 'xfce4-terminal -- ... --command'")
+
+	// Internal viewer mode
+	flagView        = flag.Bool("view", false, "Internal: run viewer on a capture JSONL file")
+	flagCapturePath = flag.String("capture", "", "Internal: capture JSONL path for --view")
+	flagMetaPath    = flag.String("meta", "", "Internal: meta.json path for --view")
+
+	// Viewer styling/behavior
+	flagViewerTitle = flag.String("viewer-title", "OutputTool Viewer", "Viewer window title")
+	flagGutterWidth = flag.Int("gutter-width", 6, "Fixed gutter width for line numbers")
+	flagTopBar      = flag.Bool("top-bar", true, "Show top status bar")
+	flagBottomBar   = flag.Bool("bottom-bar", true, "Show bottom status bar")
+	flagNoAltScreen = flag.Bool("no-alt", false, "Do not use terminal alt screen (debug)")
+	flagMouse       = flag.Bool("mouse", false, "Enable mouse tracking (disables terminal text selection)")
+
+	// Editor
+	flagEditor         = flag.String("editor", "cudatext", "Editor executable")
+	flagEditorArgPrefx = flag.String("editor-arg-prefix", "", "Optional prefix arg placed before target file (e.g. '-n')")
+	// Debug
 	flagHelpUsage      = flag.Bool("usage", false, "Show usage")
 	flagDryRunLauncher = flag.Bool("dry-launch", false, "Pipe-mode: print the launch command and do not spawn")
 )
@@ -88,6 +105,11 @@ Notes:
       line  = echo matching lines to stderr with original line numbers
   - After streaming: if (--only-on-matches && none), exits quietly. Otherwise spawns terminal with viewer and exits.
   - File mode reads file, builds capture in-memory, and runs tcell viewer inline.
+
+Viewer:
+  - ↑/↓ PgUp/PgDn Home/End to navigate; q/Esc to quit.
+  - Enter or double-click launches editor if line contains path:line[:col].
+  - --mouse enables click/double-click; press 'M' in the viewer to toggle mouse mode.
 `)
 }
 
@@ -107,7 +129,7 @@ func main() {
 		return
 	}
 
-	// select exactly one of pipe|file (clipboard/primary omitted in this focused cut)
+	// select exactly one of pipe|file (clipboard/primary omitted in this cut)
 	modes := 0
 	if *flagPipe {
 		modes++
@@ -136,7 +158,7 @@ func main() {
 func defaultRules() []Rule {
 	rx := regexp.MustCompile(`(?:\.?\.?\/)?([A-Za-z0-9._\/\-]+):(\d+):(\d+)`)
 	return []Rule{
-		{ID: "path:line:col", Regex: rx},
+		{ID: "path:line:col", Regex: rx, FileGroup: 1, LineGroup: 2, ColumnGroup: 3},
 	}
 }
 
@@ -149,6 +171,48 @@ func anyMatch(rules []Rule, line string) (bool, int) {
 		}
 	}
 	return total > 0, total
+}
+
+// For highlighting and editor extraction: find all [start,end] byte spans across rules
+func allMatchSpans(rules []Rule, s string) [][2]int {
+	var spans [][2]int
+	for _, r := range rules {
+		locs := r.Regex.FindAllStringIndex(s, -1)
+		for _, se := range locs {
+			spans = append(spans, [2]int{se[0], se[1]})
+		}
+	}
+	// optional: coalesce overlaps
+	if len(spans) > 1 {
+		spans = coalesce(spans)
+	}
+	return spans
+}
+
+func coalesce(spans [][2]int) [][2]int {
+	// simple insertion sort by start then merge
+	for i := 1; i < len(spans); i++ {
+		j := i
+		for j > 0 && spans[j-1][0] > spans[j][0] {
+			spans[j-1], spans[j] = spans[j], spans[j-1]
+			j--
+		}
+	}
+	var out [][2]int
+	cur := spans[0]
+	for i := 1; i < len(spans); i++ {
+		s := spans[i]
+		if s[0] <= cur[1] { // overlap/touch
+			if s[1] > cur[1] {
+				cur[1] = s[1]
+			}
+		} else {
+			out = append(out, cur)
+			cur = s
+		}
+	}
+	out = append(out, cur)
+	return out
 }
 
 // ---------- Pipe Mode ----------
@@ -234,7 +298,6 @@ func runPipe(rules []Rule, onlyView, onlyOn bool, matchStderr, launcher string) 
 
 	// if onlyOn and none matched, quit silently
 	if onlyOn && !any {
-		// leave capture/meta files for debugging? We can remove capture to avoid litter.
 		_ = os.Remove(capturePath)
 		return
 	}
@@ -291,7 +354,6 @@ func spawnTerminalViewer(launcher, capture, meta string) error {
 		return err
 	}
 	// Build the command string to run inside the terminal
-	// We use --view so the child runs the viewer and stays attached to the new terminal's pty.
 	var inner bytes.Buffer
 	inner.WriteString(shellQuote(self))
 	inner.WriteString(" --view ")
@@ -305,9 +367,12 @@ func spawnTerminalViewer(launcher, capture, meta string) error {
 	if *flagViewerTitle != "" {
 		inner.WriteString("--viewer-title=" + shellQuote(*flagViewerTitle) + " ")
 	}
+	if *flagMouse {
+		inner.WriteString("--mouse ")
+	}
 
 	// launcher is a prefix, e.g.:
-	//   xfce4-terminal --hide-menubar --hide-scrollbar --hide-toolbar --title='OutputTool' --command
+	//   xfce4-terminal --hide-menubar ... --command
 	parts := splitLauncher(launcher)
 	if len(parts) == 0 {
 		return fmt.Errorf("invalid launcher")
@@ -321,12 +386,11 @@ func spawnTerminalViewer(launcher, capture, meta string) error {
 	}
 
 	cmd := exec.Command(parts[0], args...)
-	// For GUI terminal we can just start; no setsid needed here, terminal handles the pty.
 	return cmd.Start()
 }
 
 func splitLauncher(s string) []string {
-	// very simple split respecting single/double quotes
+	// simple split respecting single/double quotes
 	var out []string
 	var cur bytes.Buffer
 	quote := byte(0)
@@ -437,8 +501,8 @@ func runViewerFromReader(r io.Reader, metaPath string) {
 		recs = append(recs, viewerRec{N: rec.N, Text: rec.Text, M: rec.M})
 	}
 
-	// Optional: read meta (we could display stats if desired)
-	_ = metaPath
+	// Recompile rules here for highlighting & editor extraction
+	rules := defaultRules()
 
 	// tcell screen
 	screen, err := tcell.NewScreen()
@@ -450,14 +514,17 @@ func runViewerFromReader(r io.Reader, metaPath string) {
 	}
 	defer screen.Fini()
 
-	if !*flagNoAltScreen {
+	if *flagMouse {
 		screen.EnableMouse()
+	} else {
+		screen.DisableMouse()
 	}
 
 	// styles
 	normalStyle := tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorBlack)
-	matchStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.ColorGreen)
+	matchStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.ColorGreen) // spans
 	cursorStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.ColorYellow)
+	cursorMatchStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.ColorBlue)
 	gutterStyle := tcell.StyleDefault.Foreground(tcell.ColorGray).Background(tcell.ColorBlack)
 	gutterCursor := tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorBlue)
 	topStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.ColorGreen)
@@ -470,6 +537,11 @@ func runViewerFromReader(r io.Reader, metaPath string) {
 
 	cur := 0
 	top := 0
+
+	// mouse double-click detection
+	var lastClick time.Time
+	lastClickLine := -1
+	doubleClickMax := 300 * time.Millisecond
 
 	for {
 		w, h := screen.Size()
@@ -513,7 +585,8 @@ func runViewerFromReader(r io.Reader, metaPath string) {
 
 		// top bar
 		if *flagTopBar {
-			s := fmt.Sprintf(" %s | lines:%d  pos:%d/%d ", *flagViewerTitle, len(recs), cur+1, len(recs))
+			s := fmt.Sprintf(" %s | lines:%d  pos:%d/%d  (mouse:%v) ",
+				*flagViewerTitle, len(recs), cur+1, len(recs), *flagMouse)
 			drawLine(screen, 0, 0, w, s, topStyle)
 		}
 
@@ -526,8 +599,8 @@ func runViewerFromReader(r io.Reader, metaPath string) {
 			y := bodyTop + row
 			rec := recs[idx]
 
-			ln := fmt.Sprintf("%*d", gw-2, rec.N)
 			// gutter
+			ln := fmt.Sprintf("%*d", gw-2, rec.N)
 			gs := gutterStyle
 			if idx == cur {
 				gs = gutterCursor
@@ -535,21 +608,66 @@ func runViewerFromReader(r io.Reader, metaPath string) {
 			drawText(screen, 0, y, ln, gs)
 			drawText(screen, gw-2, y, ": ", gs)
 
-			// content
-			lineStyle := normalStyle
-			if rec.M {
-				lineStyle = matchStyle
+			// content with span highlighting
+			spans := allMatchSpans(rules, rec.Text)
+			// build byte->rune index mapping
+			byteToRuneIndex := make([]int, 0, len(rec.Text)+1)
+			runePos := 0
+			for i := 0; i < len(rec.Text); {
+				byteToRuneIndex = append(byteToRuneIndex, runePos)
+				_, size := utf8.DecodeRuneInString(rec.Text[i:])
+				i += size
+				runePos++
 			}
-			if idx == cur {
-				lineStyle = cursorStyle
+			byteToRuneIndex = append(byteToRuneIndex, runePos) // sentinel
+
+			// paint content char-by-char
+			maxw := w - gw
+			rx := gw
+			if maxw < 0 {
+				maxw = 0
 			}
-			content := rec.Text
-			drawText(screen, gw, y, truncateTo(content, w-gw), lineStyle)
+			// convert spans (byte) -> rune spans
+			runeSpans := make([][2]int, 0, len(spans))
+			for _, se := range spans {
+				startRune := byteIndexToRuneIndex(byteToRuneIndex, se[0])
+				endRune := byteIndexToRuneIndex(byteToRuneIndex, se[1])
+				if endRune < startRune {
+					endRune = startRune
+				}
+				runeSpans = append(runeSpans, [2]int{startRune, endRune})
+			}
+
+			// iterate runes with an index
+			runeIdx := 0
+			for _, r := range rec.Text {
+				if rx >= w {
+					break
+				}
+				style := normalStyle
+				if idx == cur {
+					style = cursorStyle
+				}
+				if insideAnySpan(runeIdx, runeSpans) {
+					if idx == cur {
+						style = cursorMatchStyle
+					} else {
+						style = matchStyle
+					}
+				}
+				screen.SetContent(rx, y, r, nil, style)
+				rx++
+				runeIdx++
+			}
+			// clear rest of line slice
+			for ; rx < w; rx++ {
+				screen.SetContent(rx, y, ' ', nil, normalStyle)
+			}
 		}
 
 		// bottom bar
 		if *flagBottomBar {
-			status := " ↑/↓ PgUp/PgDn Home/End  q/Esc=quit "
+			status := " ↑/↓ PgUp/PgDn Home/End  Enter=edit  M=toggle-mouse  q/Esc=quit "
 			drawLine(screen, 0, h-1, w, status, botStyle)
 		}
 
@@ -560,14 +678,58 @@ func runViewerFromReader(r io.Reader, metaPath string) {
 		switch e := ev.(type) {
 		case *tcell.EventResize:
 			screen.Sync()
+
+		case *tcell.EventMouse:
+			if !*flagMouse {
+				break
+			}
+			//x,
+			_, y := e.Position()
+			btn := e.Buttons()
+			// map y to index
+			bodyTop := 0
+			if *flagTopBar {
+				bodyTop = 1
+			}
+			if y < bodyTop {
+				break
+			}
+			idx := top + (y - bodyTop)
+			if idx < 0 || idx >= len(recs) {
+				break
+			}
+			if btn&tcell.Button1 != 0 {
+				// left click: move cursor
+				cur = idx
+				// detect double-click
+				now := time.Now()
+				if lastClickLine == cur && now.Sub(lastClick) <= doubleClickMax {
+					// double click -> edit
+					launchEditorForLine(recs[cur].Text, rules)
+				}
+				lastClick = now
+				lastClickLine = cur
+			}
+
 		case *tcell.EventKey:
 			switch e.Key() {
 			case tcell.KeyEsc:
 				return
+			case tcell.KeyEnter:
+				if cur >= 0 && cur < len(recs) {
+					launchEditorForLine(recs[cur].Text, rules)
+				}
 			case tcell.KeyRune:
 				switch e.Rune() {
 				case 'q', 'Q':
 					return
+				case 'M', 'm':
+					*flagMouse = !*flagMouse
+					if *flagMouse {
+						screen.EnableMouse()
+					} else {
+						screen.DisableMouse()
+					}
 				}
 			case tcell.KeyUp:
 				cur--
@@ -578,8 +740,28 @@ func runViewerFromReader(r io.Reader, metaPath string) {
 			case tcell.KeyEnd:
 				cur = len(recs) - 1
 			case tcell.KeyPgUp:
+				_, h := screen.Size()
+				bodyTop := 0
+				bodyBottom := h
+				if *flagTopBar {
+					bodyTop = 1
+				}
+				if *flagBottomBar {
+					bodyBottom = bodyBottom - 1
+				}
+				rows := bodyBottom - bodyTop
 				cur -= rows
 			case tcell.KeyPgDn:
+				_, h := screen.Size()
+				bodyTop := 0
+				bodyBottom := h
+				if *flagTopBar {
+					bodyTop = 1
+				}
+				if *flagBottomBar {
+					bodyBottom = bodyBottom - 1
+				}
+				rows := bodyBottom - bodyTop
 				cur += rows
 			}
 			if cur < 0 {
@@ -590,6 +772,26 @@ func runViewerFromReader(r io.Reader, metaPath string) {
 			}
 		}
 	}
+}
+
+func byteIndexToRuneIndex(mapping []int, byteIndex int) int {
+	// mapping[i] is rune index at byte offset i. We built it dense.
+	if byteIndex < 0 {
+		return 0
+	}
+	if byteIndex >= len(mapping) {
+		return mapping[len(mapping)-1]
+	}
+	return mapping[byteIndex]
+}
+
+func insideAnySpan(pos int, spans [][2]int) bool {
+	for _, s := range spans {
+		if pos >= s[0] && pos < s[1] {
+			return true
+		}
+	}
+	return false
 }
 
 func drawText(s tcell.Screen, x, y int, text string, st tcell.Style) {
@@ -605,11 +807,9 @@ func drawText(s tcell.Screen, x, y int, text string, st tcell.Style) {
 		s.SetContent(rx, y, r, nil, st)
 		rx++
 	}
-	// fill remainder of line slice with background if needed
 }
 
 func drawLine(s tcell.Screen, x, y, w int, text string, st tcell.Style) {
-	// paint a full-width bar
 	for i := 0; i < w; i++ {
 		s.SetContent(x+i, y, ' ', nil, st)
 	}
@@ -620,7 +820,6 @@ func truncateTo(s string, max int) string {
 	if max <= 0 {
 		return ""
 	}
-	// simple rune-aware truncation
 	var b strings.Builder
 	b.Grow(max)
 	count := 0
@@ -634,6 +833,72 @@ func truncateTo(s string, max int) string {
 	return b.String()
 }
 
+// ---------- Editor launching ----------
+
+func launchEditorForLine(line string, rules []Rule) {
+	// Find first rule match and extract file/line/col
+	for _, r := range rules {
+		idxs := r.Regex.FindStringSubmatchIndex(line)
+		if idxs == nil {
+			continue
+		}
+		// helper to get group substring
+		getGroup := func(g int) (string, bool) {
+			if g <= 0 {
+				return "", false
+			}
+			i := 2 * g
+			if i+1 >= len(idxs) || idxs[i] < 0 || idxs[i+1] < 0 {
+				return "", false
+			}
+			return line[idxs[i]:idxs[i+1]], true
+		}
+
+		var file string
+		var ok bool
+		if file, ok = getGroup(r.FileGroup); !ok {
+			continue
+		}
+		var lineNum, colNum int
+		if s, ok := getGroup(r.LineGroup); ok {
+			lineNum, _ = strconv.Atoi(s)
+		}
+		if s, ok := getGroup(r.ColumnGroup); ok {
+			colNum, _ = strconv.Atoi(s)
+		}
+
+		target := file
+		if lineNum > 0 && colNum > 0 {
+			target = fmt.Sprintf("%s@%d@%d", file, lineNum, colNum)
+		} else if lineNum > 0 {
+			target = fmt.Sprintf("%s@%d", file, lineNum)
+		}
+
+		args := []string{}
+		if *flagEditorArgPrefx != "" {
+			args = append(args, *flagEditorArgPrefx)
+		}
+		args = append(args, target)
+
+		cmd := exec.Command(*flagEditor, args...)
+		_ = cmd.Start() // don't wait
+		return
+	}
+
+	// Fallback: no path match — write temp JSON with the line and open it
+	tmp := filepath.Join(os.TempDir(), fmt.Sprintf("ot-line-%d.json", time.Now().UnixNano()))
+	obj := map[string]any{"line": line}
+	b, _ := json.MarshalIndent(obj, "", "  ")
+	_ = os.WriteFile(tmp, b, 0644)
+
+	args := []string{}
+	if *flagEditorArgPrefx != "" {
+		args = append(args, *flagEditorArgPrefx)
+	}
+	args = append(args, tmp)
+	_ = exec.Command(*flagEditor, args...).Start()
+}
+
 // ---------- Utils ----------
 
 func exitErr(fmtStr string, a ...any) {
@@ -641,20 +906,8 @@ func exitErr(fmtStr string, a ...any) {
 	os.Exit(1)
 }
 
-//
-// Platform note:
-// We avoided direct setsid/pty work for the viewer by launching it inside a *new terminal window*
-// in pipe mode. That gives tcell a clean TTY and avoids the "spray" artifacts you hit earlier.
-// In file mode we run inline (current TTY), which is the classic tcell path.
-//
-
-// ---------- init ----------
-
 func init() {
-	// Helpful default for Windows (though you said Linux/Posix):
 	if runtime.GOOS == "windows" {
 		*flagLauncher = ""
 	}
-	// Keep env sane for terminals that dislike color detection changes.
-	// (No-op here; add as needed.)
 }
