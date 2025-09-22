@@ -9,7 +9,10 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"local/cleanup"
 	"local/editor"
+	"local/launcher"
+	"local/viewer"
 )
 
 // ---------- Types ----------
@@ -22,39 +25,19 @@ type Rule struct {
 	ColumnGroup int    `toml:"column_group"`
 }
 
-type Viewer struct {
-	Title       string `toml:"title"`
-	GutterWidth int    `toml:"gutter_width"`
-	TopBar      bool   `toml:"top_bar"`
-	BottomBar   bool   `toml:"bottom_bar"`
-	Mouse       bool   `toml:"mouse"`
-	NoAlt       bool   `toml:"no_alt"`
-}
-
-type Launcher struct {
-	Prefix     string `toml:"prefix"`      // graphical terminal (existing)
-	TmuxPrefix string `toml:"tmux_prefix"` // tmux popup command prefix
-	PreferTmux bool   `toml:"prefer_tmux"` // prefer tmux when available (auto-detect)
-}
-
 type Behavior struct {
 	OnlyViewMatches bool   `toml:"only_view_matches"`
 	OnlyOnMatches   bool   `toml:"only_on_matches"`
 	MatchStderr     string `toml:"match_stderr"` // none|line
 }
 
-type Cleanup struct {
-	KeepCapture bool `toml:"keep_capture"`
-	TTLMinutes  int  `toml:"ttl_minutes"`
-}
-
 type Config struct {
-	Rules    []Rule        `toml:"rules"`
-	Viewer   Viewer        `toml:"viewer"`
-	Editor   editor.Config `toml:"editor"`
-	Launcher Launcher      `toml:"launcher"`
-	Behavior Behavior      `toml:"behavior"`
-	Cleanup  Cleanup       `toml:"cleanup"`
+	Rules    []Rule          `toml:"rules"`
+	Viewer   viewer.Options  `toml:"viewer"`
+	Editor   editor.Config   `toml:"editor"`
+	Launcher launcher.Config `toml:"launcher"`
+	Behavior Behavior        `toml:"behavior"`
+	Cleanup  cleanup.Config  `toml:"cleanup"`
 }
 
 // ---------- Defaults ----------
@@ -70,13 +53,13 @@ func Default(bexe string) *Config {
 				ColumnGroup: 3,
 			},
 		},
-		Viewer: Viewer{
-			Title:       fmt.Sprintf("%s Viewer", bexe),
-			GutterWidth: 6,
-			TopBar:      true,
-			BottomBar:   true,
-			Mouse:       true,
-			NoAlt:       false,
+		Viewer: viewer.Options{
+			Title:         fmt.Sprintf("%s Viewer", bexe),
+			GutterWidth:   6,
+			ShowTopBar:    true,
+			ShowBottomBar: true,
+			Mouse:         true,
+			NoAlt:         false,
 		},
 		Editor: editor.Config{
 			File:        []string{"cudatext", "${__FILE__}"},
@@ -84,8 +67,8 @@ func Default(bexe string) *Config {
 			FileLineCol: []string{"cudatext", "${__FILE__}@${__LINE__}@${__COLUMN__}"},
 			PrettyJSON:  true,
 		},
-		Launcher: Launcher{
-			Prefix:     "xfce4-terminal --hide-menubar --hide-scrollbar --hide-toolbar --title='OutputTool' --command",
+		Launcher: launcher.Config{
+			TermPrefix: "xfce4-terminal --hide-menubar --hide-scrollbar --hide-toolbar --title='OutputTool' --command",
 			TmuxPrefix: "tmux new-window --",
 			PreferTmux: true,
 		},
@@ -94,7 +77,7 @@ func Default(bexe string) *Config {
 			OnlyOnMatches:   false,
 			MatchStderr:     "line",
 		},
-		Cleanup: Cleanup{
+		Cleanup: cleanup.Config{
 			KeepCapture: false,
 			TTLMinutes:  5,
 		},

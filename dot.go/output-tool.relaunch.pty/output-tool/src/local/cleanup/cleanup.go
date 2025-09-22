@@ -13,8 +13,8 @@ import (
 )
 
 type Config struct {
-	KeepCapture bool
-	TTLMinutes  int
+	KeepCapture bool `toml:"keep_capture"`
+	TTLMinutes  int  `toml:"ttl_minutes"`
 }
 
 // WrapWithSignals runs run() and ensures cleanup of temp artifacts on exit/signals unless KeepCapture.

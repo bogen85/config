@@ -15,13 +15,13 @@ import (
 )
 
 type Options struct {
-	Title         string
-	GutterWidth   int
-	ShowTopBar    bool
-	ShowBottomBar bool
-	Mouse         bool
-	NoAlt         bool
-	ErrLinesMax   int // maximum lines in bottom error/log pane (grows from 0 up to this)
+	Title         string `toml:"title"`
+	GutterWidth   int    `toml:"gutter_width"`
+	ShowTopBar    bool   `toml:"top_bar"`
+	ShowBottomBar bool   `toml:"bottom_bar"`
+	Mouse         bool   `toml:"mouse"`
+	NoAlt         bool   `toml:"no_alt"`
+	ErrLinesMax   int    `toml:"no_alt"`
 }
 
 type Hooks struct {

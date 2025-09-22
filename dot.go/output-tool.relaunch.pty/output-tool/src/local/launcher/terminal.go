@@ -10,9 +10,9 @@ import (
 )
 
 type Config struct {
-	LauncherPrefix string // graphical terminal prefix
-	TmuxPrefix     string // tmux popup prefix
-	PreferTmux     bool   // prefer tmux when available
+	TermPrefix string `toml:"prefix"`      // graphical terminal (existing)
+	TmuxPrefix string `toml:"tmux_prefix"` // tmux popup command prefix
+	PreferTmux bool   `toml:"prefer_tmux"` // prefer tmux when available (auto-detect)
 
 	ViewerTitle   string
 	OnlyView      bool
@@ -85,7 +85,7 @@ func SpawnTerminalViewer(cfg Config, selfExe, capturePath, metaPath string) erro
 	}
 
 	// Fallback to graphical terminal
-	parts := util.SplitLauncher(cfg.LauncherPrefix)
+	parts := util.SplitLauncher(cfg.TermPrefix)
 	if len(parts) == 0 {
 		return fmt.Errorf("invalid launcher prefix")
 	}

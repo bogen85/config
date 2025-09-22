@@ -50,8 +50,8 @@ var (
 	// Viewer options
 	flagViewerTitle = flag.String("viewer-title", "OutputTool Viewer", "Viewer window title")
 	flagGutterWidth = flag.Int("gutter-width", defaultConfig.Viewer.GutterWidth, "Fixed gutter width for line numbers")
-	flagTopBar      = flag.Bool("top-bar", defaultConfig.Viewer.TopBar, "Show top status bar")
-	flagBottomBar   = flag.Bool("bottom-bar", defaultConfig.Viewer.BottomBar, "Show bottom status bar")
+	flagTopBar      = flag.Bool("top-bar", defaultConfig.Viewer.ShowTopBar, "Show top status bar")
+	flagBottomBar   = flag.Bool("bottom-bar", defaultConfig.Viewer.ShowBottomBar, "Show bottom status bar")
 	flagErrLines    = flag.Int("err-lines", 5, "Max lines for bottom error/log pane")
 	flagNoAlt       = flag.Bool("no-alt", defaultConfig.Viewer.NoAlt, "Do not use terminal alt screen (debug)")
 	flagMouse       = flag.Bool("mouse", defaultConfig.Viewer.Mouse, "Enable mouse tracking (disables terminal text selection)")
@@ -226,13 +226,13 @@ func configFromCurrentFlags(args0 string) *config.Config {
 	// Viewer
 	cfg.Viewer.Title = *flagViewerTitle
 	cfg.Viewer.GutterWidth = *flagGutterWidth
-	cfg.Viewer.TopBar = *flagTopBar
-	cfg.Viewer.BottomBar = *flagBottomBar
+	cfg.Viewer.ShowTopBar = *flagTopBar
+	cfg.Viewer.ShowBottomBar = *flagBottomBar
 	cfg.Viewer.Mouse = *flagMouse
 	cfg.Viewer.NoAlt = *flagNoAlt
 
 	// Launcher
-	cfg.Launcher.Prefix = *flagLauncher
+	cfg.Launcher.TermPrefix = *flagLauncher
 
 	// Behavior
 	cfg.Behavior.OnlyViewMatches = *flagOnlyView
@@ -256,10 +256,10 @@ func applyConfigToFlagsIfNotSet(cfg *config.Config) {
 		*flagGutterWidth = cfg.Viewer.GutterWidth
 	}
 	if !set["top-bar"] {
-		*flagTopBar = cfg.Viewer.TopBar
+		*flagTopBar = cfg.Viewer.ShowTopBar
 	}
 	if !set["bottom-bar"] {
-		*flagBottomBar = cfg.Viewer.BottomBar
+		*flagBottomBar = cfg.Viewer.ShowBottomBar
 	}
 	if !set["mouse"] {
 		*flagMouse = cfg.Viewer.Mouse
@@ -268,8 +268,8 @@ func applyConfigToFlagsIfNotSet(cfg *config.Config) {
 		*flagNoAlt = cfg.Viewer.NoAlt
 	}
 	// Launcher
-	if !set["launcher"] && cfg.Launcher.Prefix != "" {
-		*flagLauncher = cfg.Launcher.Prefix
+	if !set["launcher"] && cfg.Launcher.TermPrefix != "" {
+		*flagLauncher = cfg.Launcher.TermPrefix
 	}
 	// Behavior
 	if !set["only-view-matches"] {
@@ -453,18 +453,18 @@ func runPipe(rs []rules.Rule, cfg *config.Config) {
 	// spawn viewer in terminal
 	self, _ := os.Executable()
 	lcfg := launcher.Config{
-		LauncherPrefix: *flagLauncher,
-		TmuxPrefix:     cfg.Launcher.TmuxPrefix,
-		PreferTmux:     cfg.Launcher.PreferTmux,
-		ViewerTitle:    *flagViewerTitle,
-		OnlyView:       *flagOnlyView,
-		Mouse:          *flagMouse,
-		KeepCapture:    *flagKeepCapture,
-		CleanupTTLMin:  *flagTTLMinutes,
-		DryRun:         *flagDryLaunch,
-		ForceTmux:      *flagTmuxForce,
-		NoTmux:         *flagTmuxOff,
-		ErrLinesMax:    *flagErrLines,
+		TermPrefix:    cfg.Launcher.TermPrefix,
+		TmuxPrefix:    cfg.Launcher.TmuxPrefix,
+		PreferTmux:    cfg.Launcher.PreferTmux,
+		ViewerTitle:   *flagViewerTitle,
+		OnlyView:      *flagOnlyView,
+		Mouse:         *flagMouse,
+		KeepCapture:   *flagKeepCapture,
+		CleanupTTLMin: *flagTTLMinutes,
+		DryRun:        *flagDryLaunch,
+		ForceTmux:     *flagTmuxForce,
+		NoTmux:        *flagTmuxOff,
+		ErrLinesMax:   *flagErrLines,
 	}
 	if err := launcher.SpawnTerminalViewer(lcfg, self, wr.Path(), metaPath); err != nil {
 		fatalf("launch viewer: %v", err)
