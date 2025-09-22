@@ -21,8 +21,9 @@ type Config struct {
 	CleanupTTLMin int
 	DryRun        bool
 
-	ForceTmux bool // CLI override: force tmux
-	NoTmux    bool // CLI override: disable tmux
+	ForceTmux   bool // CLI override: force tmux
+	NoTmux      bool // CLI override: disable tmux
+	ErrLinesMax int
 }
 
 func SpawnTerminalViewer(cfg Config, selfExe, capturePath, metaPath string) error {
@@ -46,8 +47,11 @@ func SpawnTerminalViewer(cfg Config, selfExe, capturePath, metaPath string) erro
 	if cfg.KeepCapture {
 		inner.WriteString("--keep-capture ")
 	}
-	if cfg.CleanupTTLMin != 90 {
+	if cfg.CleanupTTLMin > 0 {
 		inner.WriteString(fmt.Sprintf("--cleanup-ttl-minutes=%d ", cfg.CleanupTTLMin))
+	}
+	if cfg.ErrLinesMax > 0 {
+		inner.WriteString(fmt.Sprintf("--err-lines=%d ", cfg.ErrLinesMax))
 	}
 
 	innerCmd := inner.String()

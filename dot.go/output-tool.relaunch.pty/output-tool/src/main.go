@@ -56,10 +56,6 @@ var (
 	flagNoAlt       = flag.Bool("no-alt", defaultConfig.Viewer.NoAlt, "Do not use terminal alt screen (debug)")
 	flagMouse       = flag.Bool("mouse", defaultConfig.Viewer.Mouse, "Enable mouse tracking (disables terminal text selection)")
 
-	// Editor
-	flagEditorExe   = flag.String("editor", "cudatext", "Editor executable")
-	flagEditorPrefx = flag.String("editor-arg-prefix", "", "Optional prefix arg placed before target file (e.g. '-n')")
-
 	// Launcher (pipe -> new terminal)
 	flagLauncher  = flag.String("launcher", "xfce4-terminal --hide-menubar --hide-scrollbar --hide-toolbar --title='OutputTool' --command", "Terminal launcher prefix")
 	flagDryLaunch = flag.Bool("dry-launch", false, "Pipe-mode: print the launch command and do not spawn")
@@ -204,7 +200,7 @@ func main() {
 		return
 	}
 	if *flagFile != "" {
-		runFile(rs, *flagFile)
+		runFile(rs, cfg, *flagFile)
 		return
 	}
 	if execImplied {
@@ -234,9 +230,7 @@ func configFromCurrentFlags(args0 string) *config.Config {
 	cfg.Viewer.BottomBar = *flagBottomBar
 	cfg.Viewer.Mouse = *flagMouse
 	cfg.Viewer.NoAlt = *flagNoAlt
-	// Editor
-	cfg.Editor.Exe = *flagEditorExe
-	cfg.Editor.ArgPrefix = *flagEditorPrefx
+
 	// Launcher
 	cfg.Launcher.Prefix = *flagLauncher
 
@@ -272,13 +266,6 @@ func applyConfigToFlagsIfNotSet(cfg *config.Config) {
 	}
 	if !set["no-alt"] {
 		*flagNoAlt = cfg.Viewer.NoAlt
-	}
-	// Editor
-	if !set["editor"] && cfg.Editor.Exe != "" {
-		*flagEditorExe = cfg.Editor.Exe
-	}
-	if !set["editor-arg-prefix"] {
-		*flagEditorPrefx = cfg.Editor.ArgPrefix
 	}
 	// Launcher
 	if !set["launcher"] && cfg.Launcher.Prefix != "" {
@@ -329,6 +316,15 @@ func compileRules(cfg *config.Config) []rules.Rule {
 	return out
 }
 
+func editorConfig(cfg *config.Config) editor.Config {
+	return editor.Config{
+		File:        cfg.Editor.File,
+		FileLine:    cfg.Editor.FileLine,
+		FileLineCol: cfg.Editor.FileLineCol,
+		PrettyJSON:  cfg.Editor.PrettyJSON,
+	}
+}
+
 // ---------- Pipe / File / Viewer implementations ----------
 func runExec(rs []rules.Rule, cfg *config.Config, cmdArgs []string) {
 	// run command & capture
@@ -351,23 +347,11 @@ func runExec(rs []rules.Rule, cfg *config.Config, cmdArgs []string) {
 		return // zero code
 	}
 
-	// viewer inline (no relaunch)
-	vopts := viewer.Options{
-		Title:         *flagViewerTitle,
-		GutterWidth:   *flagGutterWidth,
-		ShowTopBar:    *flagTopBar,
-		ShowBottomBar: *flagBottomBar,
-		Mouse:         *flagMouse,
-		NoAlt:         *flagNoAlt,
-		ErrLinesMax:   *flagErrLines,
-	}
-	eh := editor.Config{EditorExe: *flagEditorExe, EditorArgPrefix: *flagEditorPrefx}
-
 	run := func() error {
 		// meta is already in res.Meta (Temp=false)
-		return viewer.RunFromFile(res.CapturePath, &res.Meta, rs, vopts, viewer.Hooks{
+		return viewer.RunFromFile(res.CapturePath, &res.Meta, rs, viewerOptions(), viewer.Hooks{
 			OnActivate: func(lineText string) ([]string, error) {
-				return editor.LaunchForLine(lineText, rs, eh)
+				return editor.LaunchForLine(lineText, rs, editorConfig(cfg))
 			},
 		})
 	}
@@ -480,13 +464,14 @@ func runPipe(rs []rules.Rule, cfg *config.Config) {
 		DryRun:         *flagDryLaunch,
 		ForceTmux:      *flagTmuxForce,
 		NoTmux:         *flagTmuxOff,
+		ErrLinesMax:    *flagErrLines,
 	}
 	if err := launcher.SpawnTerminalViewer(lcfg, self, wr.Path(), metaPath); err != nil {
 		fatalf("launch viewer: %v", err)
 	}
 }
 
-func runFile(rs []rules.Rule, path string) {
+func runFile(rs []rules.Rule, cfg *config.Config, path string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		fatalf("read: %v", err)
@@ -535,19 +520,10 @@ func runFile(rs []rules.Rule, path string) {
 	_ = capture.WriteMeta(metaPath, &meta)
 
 	// run viewer inline, with cleanup wrapper (won't delete since Temp=false)
-	vopts := viewer.Options{
-		Title:         *flagViewerTitle,
-		GutterWidth:   *flagGutterWidth,
-		ShowTopBar:    *flagTopBar,
-		ShowBottomBar: *flagBottomBar,
-		Mouse:         *flagMouse,
-		NoAlt:         *flagNoAlt,
-	}
-	eh := editor.Config{EditorExe: *flagEditorExe, EditorArgPrefix: *flagEditorPrefx}
 	run := func() error {
-		return viewer.RunFromFile(wr.Path(), &meta, rs, vopts, viewer.Hooks{
+		return viewer.RunFromFile(wr.Path(), &meta, rs, viewerOptions(), viewer.Hooks{
 			OnActivate: func(lineText string) ([]string, error) {
-				return editor.LaunchForLine(lineText, rs, eh)
+				return editor.LaunchForLine(lineText, rs, editorConfig(cfg))
 			},
 		})
 	}
@@ -557,7 +533,19 @@ func runFile(rs []rules.Rule, path string) {
 	}
 }
 
-func runViewerWithCleanup(capturePath, metaPath string, _ *config.Config) {
+func viewerOptions() viewer.Options {
+	return viewer.Options{
+		Title:         *flagViewerTitle,
+		GutterWidth:   *flagGutterWidth,
+		ShowTopBar:    *flagTopBar,
+		ShowBottomBar: *flagBottomBar,
+		Mouse:         *flagMouse,
+		NoAlt:         *flagNoAlt,
+		ErrLinesMax:   *flagErrLines,
+	}
+}
+
+func runViewerWithCleanup(capturePath, metaPath string, cfg *config.Config) {
 	// load meta if present
 	var meta capture.Meta
 	if metaPath != "" {
@@ -570,20 +558,10 @@ func runViewerWithCleanup(capturePath, metaPath string, _ *config.Config) {
 
 	// rules from compiled defaults (config already applied above to flags; rules for viewer can be default)
 	rs := rules.Default()
-	vopts := viewer.Options{
-		Title:         *flagViewerTitle,
-		GutterWidth:   *flagGutterWidth,
-		ShowTopBar:    *flagTopBar,
-		ShowBottomBar: *flagBottomBar,
-		Mouse:         *flagMouse,
-		NoAlt:         *flagNoAlt,
-	}
-	eh := editor.Config{EditorExe: *flagEditorExe, EditorArgPrefix: *flagEditorPrefx}
-
 	run := func() error {
-		return viewer.RunFromFile(capturePath, &meta, rs, vopts, viewer.Hooks{
+		return viewer.RunFromFile(capturePath, &meta, rs, viewerOptions(), viewer.Hooks{
 			OnActivate: func(lineText string) ([]string, error) {
-				return editor.LaunchForLine(lineText, rs, eh)
+				return editor.LaunchForLine(lineText, rs, editorConfig(cfg))
 			},
 		})
 	}

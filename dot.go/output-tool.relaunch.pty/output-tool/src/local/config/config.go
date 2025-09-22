@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"local/editor"
 )
 
 // ---------- Types ----------
@@ -29,11 +31,6 @@ type Viewer struct {
 	NoAlt       bool   `toml:"no_alt"`
 }
 
-type Editor struct {
-	Exe       string `toml:"exe"`
-	ArgPrefix string `toml:"arg_prefix"`
-}
-
 type Launcher struct {
 	Prefix     string `toml:"prefix"`      // graphical terminal (existing)
 	TmuxPrefix string `toml:"tmux_prefix"` // tmux popup command prefix
@@ -52,12 +49,12 @@ type Cleanup struct {
 }
 
 type Config struct {
-	Rules    []Rule   `toml:"rules"`
-	Viewer   Viewer   `toml:"viewer"`
-	Editor   Editor   `toml:"editor"`
-	Launcher Launcher `toml:"launcher"`
-	Behavior Behavior `toml:"behavior"`
-	Cleanup  Cleanup  `toml:"cleanup"`
+	Rules    []Rule        `toml:"rules"`
+	Viewer   Viewer        `toml:"viewer"`
+	Editor   editor.Config `toml:"editor"`
+	Launcher Launcher      `toml:"launcher"`
+	Behavior Behavior      `toml:"behavior"`
+	Cleanup  Cleanup       `toml:"cleanup"`
 }
 
 // ---------- Defaults ----------
@@ -81,9 +78,11 @@ func Default(bexe string) *Config {
 			Mouse:       true,
 			NoAlt:       false,
 		},
-		Editor: Editor{
-			Exe:       "cudatext",
-			ArgPrefix: "",
+		Editor: editor.Config{
+			File:        []string{"cudatext", "${__FILE__}"},
+			FileLine:    []string{"cudatext", "${__FILE__}@${__LINE__}"},
+			FileLineCol: []string{"cudatext", "${__FILE__}@${__LINE__}@${__COLUMN__}"},
+			PrettyJSON:  true,
 		},
 		Launcher: Launcher{
 			Prefix:     "xfce4-terminal --hide-menubar --hide-scrollbar --hide-toolbar --title='OutputTool' --command",
