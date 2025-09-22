@@ -1,8 +1,8 @@
 # Output Tool (tcell + JSONL)
 
 Build:
-  make build
+ make build
 
 Usage:
-  ./bin/ot --pipe
-  ./bin/ot --file=/path/to/file
+ ./bin/ot --pipe
+ ./bin/ot --file=/path/to/file

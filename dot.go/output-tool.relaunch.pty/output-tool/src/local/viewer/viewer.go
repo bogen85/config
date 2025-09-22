@@ -41,7 +41,8 @@ func RunFromFile(capturePath string, meta *capture.Meta, rs []rules.Rule, opts O
 	return runFromReader(f, meta, rs, opts, hooks)
 }
 
-func runFromReader(r io.Reader, _ *capture.Meta, rs []rules.Rule, opts Options, hooks Hooks) error {
+func runFromReader(r io.Reader, meta *capture.Meta, rs []rules.Rule, opts Options, hooks Hooks) error {
+
 	rows, err := capture.ReadAllFromReader(r)
 	if err != nil {
 		return err
@@ -127,7 +128,25 @@ func runFromReader(r io.Reader, _ *capture.Meta, rs []rules.Rule, opts Options, 
 		screen.Clear()
 
 		if opts.ShowTopBar {
-			s := fmt.Sprintf(" %s | lines:%d  pos:%d/%d  (mouse:%v) ", opts.Title, len(recs), cur+1, len(recs), opts.Mouse)
+			// Build a richer status including capture mode and (for exec) exit code
+			mode := ""
+			exit := ""
+			if meta != nil {
+				if meta.Source.Mode != "" {
+					mode = fmt.Sprintf("input:%s  ", meta.Source.Mode)
+				}
+				if meta.Source.Mode == "exec" {
+					exit = fmt.Sprintf("exit:%d  ", meta.ExitCode)
+				}
+			}
+			ml := 0
+			mt := 0
+			if meta != nil {
+				ml, mt = meta.MatchLines, meta.MatchesTotal
+			}
+			s := fmt.Sprintf(" %s | %s%slines:%d  pos:%d/%d  match-lines:%d  matches:%d  (mouse:%v) ",
+				opts.Title, mode, exit, len(recs), cur+1, len(recs), ml, mt, opts.Mouse)
+
 			drawLine(screen, 0, 0, w, s, topStyle)
 		}
 

@@ -206,6 +206,7 @@ func Run(cmdArgs []string, rs []rules.Rule, opts Options) (*Result, error) {
 			CreatedUnixSec: time.Now().Unix(),
 			Temp:           false, // viewer inline won't auto-delete
 			OwnerPID:       os.Getpid(),
+			ExitCode:       exitCode,
 			Source: capture.Source{
 				Mode: "exec",
 				Arg:  strings.Join(cmdArgs, " "),
