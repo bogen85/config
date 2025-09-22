@@ -297,7 +297,7 @@ func compileRules(cfg *config.Config) []rules.Rule {
 	}
 	out := make([]rules.Rule, 0, len(cfg.Rules))
 	for _, r := range cfg.Rules {
-		re, err := regexp.Compile(r.Regex)
+		re, err := regexp.Compile(r.RegexStr)
 		if err != nil {
 			// invalid regex → skip
 			continue

@@ -12,18 +12,11 @@ import (
 	"local/cleanup"
 	"local/editor"
 	"local/launcher"
+	"local/rules"
 	"local/viewer"
 )
 
 // ---------- Types ----------
-
-type Rule struct {
-	ID          string `toml:"id"`
-	Regex       string `toml:"regex"`
-	FileGroup   int    `toml:"file_group"`
-	LineGroup   int    `toml:"line_group"`
-	ColumnGroup int    `toml:"column_group"`
-}
 
 type Behavior struct {
 	OnlyViewMatches bool   `toml:"only_view_matches"`
@@ -32,7 +25,7 @@ type Behavior struct {
 }
 
 type Config struct {
-	Rules    []Rule          `toml:"rules"`
+	Rules    []rules.Rule    `toml:"rules"`
 	Viewer   viewer.Options  `toml:"viewer"`
 	Editor   editor.Config   `toml:"editor"`
 	Launcher launcher.Config `toml:"launcher"`
@@ -44,10 +37,10 @@ type Config struct {
 
 func Default(bexe string) *Config {
 	return &Config{
-		Rules: []Rule{
+		Rules: []rules.Rule{
 			{
 				ID:          "path:line:col",
-				Regex:       `(?:\.?\.?\/)?([A-Za-z0-9._\/\-]+):(\d+):(\d+)`,
+				RegexStr:    `(?:\.?\.?\/)?([A-Za-z0-9._\/\-]+):(\d+):(\d+)`,
 				FileGroup:   1,
 				LineGroup:   2,
 				ColumnGroup: 3,
@@ -74,7 +67,7 @@ func Default(bexe string) *Config {
 		},
 		Behavior: Behavior{
 			OnlyViewMatches: false,
-			OnlyOnMatches:   false,
+			OnlyOnMatches:   true,
 			MatchStderr:     "line",
 		},
 		Cleanup: cleanup.Config{
@@ -243,7 +236,7 @@ func (c *Config) ToCompiledRules() []CompiledRule {
 	for _, r := range c.Rules {
 		out = append(out, CompiledRule{
 			ID:          r.ID,
-			Regex:       r.Regex,
+			Regex:       r.RegexStr,
 			FileGroup:   r.FileGroup,
 			LineGroup:   r.LineGroup,
 			ColumnGroup: r.ColumnGroup,

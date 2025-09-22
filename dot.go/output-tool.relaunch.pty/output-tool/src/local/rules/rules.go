@@ -3,11 +3,12 @@ package rules
 import "regexp"
 
 type Rule struct {
-	ID          string
+	ID          string `toml:"id"`
+	RegexStr    string `toml:"regex"`
+	FileGroup   int    `toml:"file_group"`   // 1-based capture group index for file path (0 = none)
+	LineGroup   int    `toml:"line_group"`   // 1-based capture group index for line number
+	ColumnGroup int    `toml:"column_group"` // 1-based capture group index for column number
 	Regex       *regexp.Regexp
-	FileGroup   int // 1-based capture group index for file path (0 = none)
-	LineGroup   int // 1-based capture group index for line number
-	ColumnGroup int // 1-based capture group index for column number
 }
 
 func Default() []Rule {
