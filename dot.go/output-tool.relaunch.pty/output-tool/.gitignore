@@ -1,2 +1,4 @@
 bin
 *.toml
+*.gz
+*.tar

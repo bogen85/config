@@ -14,7 +14,7 @@ SHELL := /bin/bash
 export SHELLOPTS
 
 define build_defs
-	function : () {
+	function :: () {
 		if [ "@" == "$$1" ]; then
 			shift
 		else
@@ -51,12 +51,12 @@ all: build
 
 build:
 	$_
-	: @ mkdir -p $(BIN)
-	: @ $(GO) build -o $(BIN)/$(APP) -v $(SRC)/*.go
+	:: @ mkdir -p $(BIN)
+	:: @ $(GO) build -o $(BIN)/$(APP) -v $(SRC)/*.go
 
 install: build
 	$_
-	: cp -vf $(BIN)/$(APP) $(HOME)/bin/ot
+	:: cp -vf $(BIN)/$(APP) $(HOME)/bin/ot
 
 fmt:
 	$_
@@ -64,7 +64,7 @@ fmt:
 
 clean:
 	$_
-	: rm -rf $(BIN) *.tar.gz
+	:: rm -rf $(BIN)
 
 run-file: build
 	$_
@@ -72,9 +72,15 @@ run-file: build
 
 run-pipe: build
 	$_
-	: echo "example: pipe mode"; echo "main.go:10:2: oops" | $(BIN)/$(APP) --pipe
+	:: echo "example: pipe mode"; echo "main.go:10:2: oops" | $(BIN)/$(APP) --pipe
 
 tar:
 	$_
-	: tar -czf $(APP)-src.tar.gz --exclude='./bin' -C $(ROOT) .
-	: echo "Created $(APP)-src.tar.gz"
+	tarball=$(APP)-src.tar.gz
+	dir=$$(basename $(ROOT))
+	:: @ rm -vf $${tarball}
+	:: @ cd ..
+	:: tar -cvzf $${tarball} --exclude=$${dir}/bin $${dir}
+	:: @ cd $(ROOT)
+	:: @ mv -v ../$${tarball} .
+	:: @ du -h $${tarball}
