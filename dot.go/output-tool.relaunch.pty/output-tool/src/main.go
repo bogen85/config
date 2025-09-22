@@ -367,8 +367,7 @@ func runExec(rs []rules.Rule, cfg *config.Config, cmdArgs []string) {
 		// meta is already in res.Meta (Temp=false)
 		return viewer.RunFromFile(res.CapturePath, &res.Meta, rs, vopts, viewer.Hooks{
 			OnActivate: func(lineText string) ([]string, error) {
-				argv, err := editor.LaunchForLine(lineText, rs, eh)
-				return argv, err
+				return editor.LaunchForLine(lineText, rs, eh)
 			},
 		})
 	}
@@ -547,7 +546,9 @@ func runFile(rs []rules.Rule, path string) {
 	eh := editor.Config{EditorExe: *flagEditorExe, EditorArgPrefix: *flagEditorPrefx}
 	run := func() error {
 		return viewer.RunFromFile(wr.Path(), &meta, rs, vopts, viewer.Hooks{
-			OnActivate: func(lineText string) ([]string, error) { return editor.LaunchForLine(lineText, rs, eh) },
+			OnActivate: func(lineText string) ([]string, error) {
+				return editor.LaunchForLine(lineText, rs, eh)
+			},
 		})
 	}
 	ccfg := cleanup.Config{KeepCapture: *flagKeepCapture, TTLMinutes: *flagTTLMinutes}
@@ -581,7 +582,9 @@ func runViewerWithCleanup(capturePath, metaPath string, _ *config.Config) {
 
 	run := func() error {
 		return viewer.RunFromFile(capturePath, &meta, rs, vopts, viewer.Hooks{
-			OnActivate: func(lineText string) ([]string, error) { return editor.LaunchForLine(lineText, rs, eh) },
+			OnActivate: func(lineText string) ([]string, error) {
+				return editor.LaunchForLine(lineText, rs, eh)
+			},
 		})
 	}
 	ccfg := cleanup.Config{KeepCapture: *flagKeepCapture, TTLMinutes: *flagTTLMinutes}

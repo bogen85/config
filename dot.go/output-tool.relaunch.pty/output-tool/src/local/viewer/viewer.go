@@ -244,8 +244,8 @@ func runFromReader(r io.Reader, meta *capture.Meta, rs []rules.Rule, opts Option
 				logVis = opts.ErrLinesMax
 			}
 			start := len(logLines) - logVis
-			// use an inverted bottom style to distinguish; adjust if you have a dedicated style
-			inv := botStyle.Reverse(true)
+			// use an inverted gutter style to distinguish; adjust if you have a dedicated style
+			inv := gutterStyle.Reverse(true)
 			for i := 0; i < logVis; i++ {
 				ln := logLines[start+i]
 				// y coordinate: stack upwards above bottom bar
