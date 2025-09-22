@@ -52,6 +52,7 @@ var (
 	flagGutterWidth = flag.Int("gutter-width", defaultConfig.Viewer.GutterWidth, "Fixed gutter width for line numbers")
 	flagTopBar      = flag.Bool("top-bar", defaultConfig.Viewer.TopBar, "Show top status bar")
 	flagBottomBar   = flag.Bool("bottom-bar", defaultConfig.Viewer.BottomBar, "Show bottom status bar")
+	flagErrLines    = flag.Int("err-lines", 5, "Max lines for bottom error/log pane")
 	flagNoAlt       = flag.Bool("no-alt", defaultConfig.Viewer.NoAlt, "Do not use terminal alt screen (debug)")
 	flagMouse       = flag.Bool("mouse", defaultConfig.Viewer.Mouse, "Enable mouse tracking (disables terminal text selection)")
 
@@ -358,13 +359,17 @@ func runExec(rs []rules.Rule, cfg *config.Config, cmdArgs []string) {
 		ShowBottomBar: *flagBottomBar,
 		Mouse:         *flagMouse,
 		NoAlt:         *flagNoAlt,
+		ErrLinesMax:   *flagErrLines,
 	}
 	eh := editor.Config{EditorExe: *flagEditorExe, EditorArgPrefix: *flagEditorPrefx}
 
 	run := func() error {
 		// meta is already in res.Meta (Temp=false)
 		return viewer.RunFromFile(res.CapturePath, &res.Meta, rs, vopts, viewer.Hooks{
-			OnActivate: func(lineText string) { editor.LaunchForLine(lineText, rs, eh) },
+			OnActivate: func(lineText string) ([]string, error) {
+				argv, err := editor.LaunchForLine(lineText, rs, eh)
+				return argv, err
+			},
 		})
 	}
 	ccfg := cleanup.Config{KeepCapture: *flagKeepCapture, TTLMinutes: *flagTTLMinutes}
@@ -542,7 +547,7 @@ func runFile(rs []rules.Rule, path string) {
 	eh := editor.Config{EditorExe: *flagEditorExe, EditorArgPrefix: *flagEditorPrefx}
 	run := func() error {
 		return viewer.RunFromFile(wr.Path(), &meta, rs, vopts, viewer.Hooks{
-			OnActivate: func(lineText string) { editor.LaunchForLine(lineText, rs, eh) },
+			OnActivate: func(lineText string) ([]string, error) { return editor.LaunchForLine(lineText, rs, eh) },
 		})
 	}
 	ccfg := cleanup.Config{KeepCapture: *flagKeepCapture, TTLMinutes: *flagTTLMinutes}
@@ -576,7 +581,7 @@ func runViewerWithCleanup(capturePath, metaPath string, _ *config.Config) {
 
 	run := func() error {
 		return viewer.RunFromFile(capturePath, &meta, rs, vopts, viewer.Hooks{
-			OnActivate: func(lineText string) { editor.LaunchForLine(lineText, rs, eh) },
+			OnActivate: func(lineText string) ([]string, error) { return editor.LaunchForLine(lineText, rs, eh) },
 		})
 	}
 	ccfg := cleanup.Config{KeepCapture: *flagKeepCapture, TTLMinutes: *flagTTLMinutes}

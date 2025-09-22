@@ -16,7 +16,8 @@ type Config struct {
 	EditorArgPrefix string
 }
 
-func LaunchForLine(line string, rs []rules.Rule, cfg Config) {
+// LaunchForLine runs the configured editor and returns the argv used.
+func LaunchForLine(line string, rs []rules.Rule, cfg Config) ([]string, error) {
 	file, ln, col, ok := rules.ExtractPathLineCol(rs, line)
 	if ok {
 		target := file
@@ -30,8 +31,7 @@ func LaunchForLine(line string, rs []rules.Rule, cfg Config) {
 			args = append(args, cfg.EditorArgPrefix)
 		}
 		args = append(args, target)
-		_ = exec.Command(cfg.EditorExe, args...).Start()
-		return
+		return args, exec.Command(cfg.EditorExe, args...).Start()
 	}
 	// fallback: dump json
 	tmp := filepath.Join(os.TempDir(), fmt.Sprintf("ot-line-%d.json", time.Now().UnixNano()))
@@ -42,5 +42,5 @@ func LaunchForLine(line string, rs []rules.Rule, cfg Config) {
 		args = append(args, cfg.EditorArgPrefix)
 	}
 	args = append(args, tmp)
-	_ = exec.Command(cfg.EditorExe, args...).Start()
+	return args, exec.Command(cfg.EditorExe, args...).Start()
 }

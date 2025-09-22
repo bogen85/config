@@ -5,6 +5,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -20,10 +21,12 @@ type Options struct {
 	ShowBottomBar bool
 	Mouse         bool
 	NoAlt         bool
+	ErrLinesMax   int // maximum lines in bottom error/log pane (grows from 0 up to this)
 }
 
 type Hooks struct {
-	OnActivate func(lineText string)
+	// OnActivate is called when the user "edits" (Enter/e/E/etc.). It returns the argv used and an error, if any.
+	OnActivate func(lineText string) (argv []string, err error)
 }
 
 type rec struct {
@@ -84,6 +87,21 @@ func runFromReader(r io.Reader, meta *capture.Meta, rs []rules.Rule, opts Option
 	cur := 0
 	top := 0
 
+	// bottom log pane (grows up to opts.ErrLinesMax)
+	var logLines []string
+	appendLog := func(s string) {
+		// split on newlines, append each
+		for _, ln := range strings.Split(strings.TrimRight(s, "\r\n"), "\n") {
+			logLines = append(logLines, ln)
+			if opts.ErrLinesMax > 0 && len(logLines) > opts.ErrLinesMax {
+				// keep only the tail
+				logLines = logLines[len(logLines)-opts.ErrLinesMax:]
+			}
+		}
+		// force a resync so new rows don’t smear until a manual resize
+		screen.Sync()
+	}
+
 	var lastClickLine = -1
 	var lastClickTime = int64(0)
 	doubleClickMaxMs := int64(300)
@@ -95,10 +113,22 @@ func runFromReader(r io.Reader, meta *capture.Meta, rs []rules.Rule, opts Option
 		if opts.ShowTopBar {
 			bodyTop = 1
 		}
+
+		// reserve space for bottom log + bottom bar
+		// visible log lines = current size (capped by ErrLinesMax)
+		logVis := 0
+		if opts.ErrLinesMax > 0 && len(logLines) > 0 {
+			logVis = len(logLines)
+			if logVis > opts.ErrLinesMax {
+				logVis = opts.ErrLinesMax
+			}
+		}
 		if opts.ShowBottomBar {
 			bodyBottom -= 1
 		}
+		bodyBottom -= logVis
 		rowsVis := bodyBottom - bodyTop
+
 		if rowsVis < 1 {
 			rowsVis = 1
 		}
@@ -207,6 +237,27 @@ func runFromReader(r io.Reader, meta *capture.Meta, rs []rules.Rule, opts Option
 			}
 		}
 
+		// draw bottom log pane (if any), just above the bottom bar
+		if opts.ErrLinesMax > 0 && len(logLines) > 0 {
+			logVis := len(logLines)
+			if logVis > opts.ErrLinesMax {
+				logVis = opts.ErrLinesMax
+			}
+			start := len(logLines) - logVis
+			// use an inverted bottom style to distinguish; adjust if you have a dedicated style
+			inv := botStyle.Reverse(true)
+			for i := 0; i < logVis; i++ {
+				ln := logLines[start+i]
+				// y coordinate: stack upwards above bottom bar
+				y := h - 1
+				if opts.ShowBottomBar {
+					y = h - 2
+				}
+				y -= (logVis - 1 - i)
+				drawLine(screen, 0, y, w, " "+ln+" ", inv)
+			}
+		}
+
 		if opts.ShowBottomBar {
 			status := " ↑/↓ PgUp/PgDn Home/End  Enter=edit  M=toggle-mouse  q/Esc=quit "
 			drawLine(screen, 0, h-1, w, status, botStyle)
@@ -254,7 +305,13 @@ func runFromReader(r io.Reader, meta *capture.Meta, rs []rules.Rule, opts Option
 			case tcell.KeyEnter:
 				if cur >= 0 && cur < len(recs) {
 					if hooks.OnActivate != nil {
-						hooks.OnActivate(recs[cur].Text)
+						argv, err := hooks.OnActivate(recs[cur].Text)
+						if len(argv) > 0 {
+							appendLog("edit: exec: " + strings.Join(argv, " "))
+						}
+						if err != nil {
+							appendLog("edit: error: " + err.Error())
+						}
 					}
 				}
 			case tcell.KeyRune:
