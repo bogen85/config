@@ -135,13 +135,15 @@ func main() {
 		var b64Buf bytes.Buffer
 		b64Enc := base64.NewEncoder(base64.StdEncoding, &b64Buf)
 		r := io.TeeReader(file, h)
-		if _, err := io.Copy(b64Enc, r); err != nil {
+
+		n, err := io.Copy(b64Enc, r)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding file %q: %v\n", f, err)
 			continue
 		}
 		b64Enc.Close()
 
-		entry.SizeBytes = int64(h.Size())
+		entry.SizeBytes = n
 		entry.Sha256Bytes = fmt.Sprintf("%x", h.Sum(nil))
 		entry.ContentBase64 = b64Buf.String()
 
