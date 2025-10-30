@@ -102,3 +102,22 @@ function disable-run-verbose {
         Write-Host "RUN_VERBOSE was not set"
     }
 }
+
+function mk-run-alias {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $true)]
+        [string]$ExePath
+    )
+
+    Set-Item -Path "function:$Name" -Value {
+        param(
+            [Parameter(ValueFromRemainingArguments = $true)]
+            [string[]]$Args
+        )
+        run $ExePath @Args
+    }.GetNewClosure()
+}
+
+mk-run-alias -Name jkl -ExePath 'C:\abc\def\ghi\jkl.exe'
