@@ -7,9 +7,9 @@ function run {
         [string[]]$Args
     )
 
-    #if (-not $IsWindows) {
-    #    throw "run: this helper is Windows-only."
-    #}
+    if (-not $IsWindows) {
+        throw "run: this helper is Windows-only."
+    }
 
     # env-based verbose
     $runVerbose = ($env:RUN_VERBOSE -eq '1')
@@ -42,9 +42,9 @@ function run {
     }
 
     # 2a. on Windows, we really want an .exe (so we don't copy e.g. .ps1)
-    #if (-not $exePath.EndsWith('.exe', 'InvariantCultureIgnoreCase')) {
-    #    throw "run: expected a Windows .exe, got '$exePath'"
-    #}
+    if (-not $exePath.EndsWith('.exe', 'InvariantCultureIgnoreCase')) {
+        throw "run: expected a Windows .exe, got '$exePath'"
+    }
 
     # 3. copy to temp to avoid locking the original
     $tempExe = Join-Path $tempDir ([IO.Path]::GetFileName($exePath))
@@ -77,4 +77,28 @@ function run {
     }
 
     return $exit
+}
+
+
+function jkl {
+    param(
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$Args
+    )
+
+    run 'C:\abc\def\ghi\jkl.exe' @Args
+}
+
+function enable-run-verbose {
+    $env:RUN_VERBOSE = '1'
+    Write-Host "RUN_VERBOSE enabled (set to 1)"
+}
+
+function disable-run-verbose {
+    if (Test-Path Env:RUN_VERBOSE) {
+        Remove-Item Env:RUN_VERBOSE -ErrorAction SilentlyContinue
+        Write-Host "RUN_VERBOSE disabled (environment variable removed)"
+    } else {
+        Write-Host "RUN_VERBOSE was not set"
+    }
 }
