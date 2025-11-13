@@ -1,0 +1,63 @@
+    1  cd /workspace/
+    2  wget https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud.latest.x86_64.qcow2
+    3  dnf --refresh upgrade -y
+    4  dnf install -y qemu-kvm-core
+    5  ls
+    6  /usr/libexec/qemu-kvm -machine accel=tcg -m 4096 -smp 4 -drive file=./Rocky-9-GenericCloud.latest.x86_64.qcow2,if=virtio,format=qcow2 -nographic
+    7  reset
+    8  /usr/libexec/qemu-kvm -cpu max  -machine accel=tcg -m 4096 -smp 4 -drive file=./Rocky-9-GenericCloud.latest.x86_64.qcow2,if=virtio,format=qcow2 -nographic
+    9  reset
+   10  cat > make-seed.sh
+   11  ls
+   12  chmod +x make-seed.sh 
+   13  ./make-seed.sh 
+   14  dnf install -y xorrisofs
+   15  dnf provides xorrisofs
+   16  dnf install -y xorriso
+   17  ./make-seed.sh 
+   18  ls
+   19  /usr/libexec/qemu-kvm -cpu max  -machine accel=tcg -m 4096 -smp 4 -drive file=./Rocky-9-GenericCloud.latest.x86_64.qcow2,if=virtio,format=qcow2 -drive file=seed.iso,if=virtio,format=raw,readonly=on -nographic 
+   20  ls
+   21  mkdir old/0 -pv
+   22  mv make-seed.sh old/0/
+   23  cat > make-seed.sh
+   24  ls
+   25  chmod +x make-seed.sh 
+   26  ls
+   27  ./make-seed.sh 
+   28  /usr/libexec/qemu-kvm -cpu max  -machine accel=tcg -m 4096 -smp 4 -drive file=./Rocky-9-GenericCloud.latest.x86_64.qcow2,if=virtio,format=qcow2 -drive file=seed.iso,if=virtio,format=raw,readonly=on -nographic 
+   29  ls /dev/kvm
+   30  reset
+   31  /usr/libexec/qemu-kvm --help # -cpu max  -machine accel=tcg -m 4096 -smp 4 -drive file=./Rocky-9-GenericCloud.latest.x86_64.qcow2,if=virtio,format=qcow2 -drive file=seed.iso,if=virtio,format=raw,readonly=on -nographic 
+   32  /usr/libexec/qemu-kvm --help | fgrep kvm # -cpu max  -machine accel=tcg -m 4096 -smp 4 -drive file=./Rocky-9-GenericCloud.latest.x86_64.qcow2,if=virtio,format=qcow2 -drive file=seed.iso,if=virtio,format=raw,readonly=on -nographic  
+   33  reset
+   34  /usr/libexec/qemu-kvm -cpu max  -machine accel=tcg -m 4096 -smp 4 -drive file=./Rocky-9-GenericCloud.latest.x86_64.qcow2,if=virtio,format=qcow2 -drive file=seed.iso,if=virtio,format=raw,readonly=on -nographic 
+   35  reset
+   36  history
+   37  wget https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud.latest.x86_64.qcow2
+   38  ls
+   39  mkdir modified
+   40  mv Rocky-9-GenericCloud.latest.x86_64.qcow2 modified/
+   41  mkdir unmodified
+   42  mv Rocky-9-GenericCloud.latest.x86_64.qcow2.1 unmodified/Rocky-9-GenericCloud.latest.x86_64.qcow2
+   43  cp unmodified/Rocky-9-GenericCloud.latest.x86_64.qcow2 .
+   44  /usr/libexec/qemu-kvm -cpu max  -machine accel=tcg -m 4096 -smp 4 -drive file=./Rocky-9-GenericCloud.latest.x86_64.qcow2,if=virtio,format=qcow2 -drive file=seed.iso,if=virtio,format=raw,readonly=on -nographic 
+   45  /usr/libexec/qemu-kvm -cpu max  -machine accel=tcg -m 4096 -smp 4 -drive file=./Rocky-9-GenericCloud.latest.x86_64.qcow2,if=virtio,format=qcow2 -drive file=seed.iso,if=virtio,format=raw,readonly=on -nographic 
+   46  reset
+   47  ls
+   48  cp unmodified/Rocky-9-GenericCloud.latest.x86_64.qcow2 .
+   49  ls
+   50  cat make-seed.sh 
+   51  ls
+   52  mkdir old/1/make-seed.sh
+   53  mkdir old/1/
+   54  cp make-seed.sh old/1/
+   55  cat > make-seed.sh 
+   56  ls
+   57  ls
+   58  ./make-seed.sh 
+   59  ls
+   60  /usr/libexec/qemu-kvm -cpu max  -machine accel=tcg -m 4096 -smp 4 -drive file=./Rocky-9-GenericCloud.latest.x86_64.qcow2,if=virtio,format=qcow2 -drive file=seed.iso,if=virtio,format=raw,readonly=on -nographic 
+   61  history | fgrep git
+   62  history | fgrep dnf
+   63  history > history.txt
