@@ -1,0 +1,12 @@
+version: "3.9"
+services:
+  qemu-builder:
+    image: your-qemu-image
+    command: >
+      /usr/libexec/qemu-kvm -cpu max -machine accel=kvm -m 4096 ...
+    devices:
+      - "/dev/kvm:/dev/kvm"
+    userns_mode: "keep-id"
+    # Optional: if you need extra privileges for KVM
+    cap_add:
+      - SYS_ADMIN
